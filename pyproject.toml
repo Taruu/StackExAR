@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "stackexar"
+version = "0.1.0"
+description = ""
+authors = ["Igor Markov <taruumax@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = {extras = ["all"], version = "^0.109.1"}
+tortoise-orm = "^0.20.0"
+py7zr = "^0.20.8"
+aiosqlite = "0.16.0"
+uvicorn = "^0.27.0.post1"
+pydantic-settings = "^2.1.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
