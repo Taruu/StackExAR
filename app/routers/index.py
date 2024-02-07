@@ -10,8 +10,8 @@ async def send(name: str):
 
 @router.put("/send_all")
 async def send_all():
-    picker = archive.ArchivePiker()
-    return picker.list_files()
+    picker = archive.ArchiveFeed()
+    return await picker.list_sources()
     pass
 
 
