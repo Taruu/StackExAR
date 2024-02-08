@@ -1,11 +1,20 @@
+import asyncio
+import multiprocessing
+import queue
+import time
+from collections import deque
+from queue import Queue
 from typing import List
 from enum import Enum
 from pathlib import Path
+import functools
+import xml.etree.ElementTree as ElementTree
 
 from asyncio import get_event_loop, gather, sleep
-import aiofiles
 
 from py7zr import SevenZipFile, is_7zfile
+
+from .. import global_app
 from ..utils import config
 
 POSTS_FILENAME = "Posts.xml"
@@ -29,15 +38,40 @@ class DataArchive:
 
     reader = None
 
-    def _sync_read_archive(self, archive_path, filename):
-        pass
-
     @staticmethod
-    async def async_read_archive(archive_path, filename):
+    def _sync_read_archive(archive_path, filename, bytes_queue):
+        print(filename)
         with SevenZipFile(archive_path, 'r') as archive_read:
             file_reader = archive_read.read(targets=filename).get('Tags.xml')
-            print(file_reader.read(1000))
-            print(archive_read, file_reader)
+            for line in file_reader.readlines():
+                # print(line)
+                bytes_queue.put_nowait(line)
+        return True
+
+    async def async_read_archive(self, archive_path, filename):
+        loop = asyncio.get_running_loop()
+
+        m = multiprocessing.Manager()
+        bytes_queue: multiprocessing.Queue = m.Queue()
+
+        temp_list = []
+
+        print("out", id(bytes_queue))
+
+        print("out", id(bytes_queue))
+        sync_future: asyncio.Future = loop.run_in_executor(
+            global_app.app.process_pools, self._sync_read_archive, archive_path, filename, bytes_queue)
+
+        # sync_task = asyncio.ensure_future(sync_future, loop=loop)
+
+        print(not bytes_queue.empty(), not sync_future.done())
+        while (not bytes_queue.empty()) or (not sync_future.done()):
+            try:
+                print("while", bytes_queue.get_nowait())
+            except queue.Empty:
+                await asyncio.sleep(1)
+
+        pass
 
     async def read_tags(self):
         await self.async_read_archive(self.tags_archive_path, TAGS_FILENAME)
