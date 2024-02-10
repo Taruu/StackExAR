@@ -1,3 +1,5 @@
+import asyncio
+
 from py7zr import SevenZipFile
 
 from .config import settings
@@ -24,6 +26,8 @@ class ArchiveFeed:
                 data_archives_list.append(DataArchive(path))
             except ValueError:
                 continue
-        for data_archive in data_archives_list:
-            await data_archive.read_tags()
+        task_list = []
+        async with asyncio.TaskGroup() as tg:
+            for data_archive in data_archives_list:
+                tg.create_task(data_archive.index_tags())
         return []

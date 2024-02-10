@@ -10,9 +10,15 @@ from pathlib import Path
 import functools
 import xml.etree.ElementTree as ElementTree
 
+from sqlalchemy import select, delete
+
+from ..database.function import get_database_session
+from ..database.models import Tag, QuestionPost, Base
+
 from asyncio import get_event_loop, gather, sleep
 
 from py7zr import SevenZipFile, is_7zfile
+from tortoise import Tortoise
 
 from .. import global_app
 from ..utils import config
@@ -75,17 +81,27 @@ class DataArchive:
             except queue.Empty:
                 await asyncio.sleep(0)
 
-
-
-    async def read_tags(self):
-        start_points = 0
-        async for line in self.async_read_archive_generator(self.tags_archive_path, TAGS_FILENAME):
-            print()
-            print("readlines", start_points, len(line), line)
-            print('by_add_read',
-                  await self.async_read_archive_by_address(self.tags_archive_path, TAGS_FILENAME, start_points,
-                                                           len(line)))
-            start_points += len(line)
+    async def index_tags(self):
+        async_session = await get_database_session(f"{Path(self.post_archive_path).parent}/{self.name}.db")
+        async with async_session() as session:
+            stmt = (
+                delete(Tag)
+            )
+            await session.execute(stmt)
+            await session.commit()
+        # print(self.name)
+        # xml_parser = ElementTree.XMLPullParser(['end'])
+        # start_points = 0
+        # async for line in self.async_read_archive_generator(self.tags_archive_path, TAGS_FILENAME):
+        #     xml_parser.feed(line)
+        #     for dict_xml_tag in xml_parser.read_events():
+        #         xml_tag: ElementTree.Element = dict_xml_tag[1]
+        #         if xml_tag.tag == "row":
+        #             await Tag.update_or_create(id=xml_tag.attrib.get('Id'),
+        #                                        name=xml_tag.attrib.get("TagName"),
+        #                                        count_usage=xml_tag.attrib.get("Count"))
+        #     start_points += len(line)
+        # pass
 
     def __init__(self, archive_path: List[str] | str):
         if not is_7zfile(archive_path):
@@ -95,7 +111,7 @@ class DataArchive:
             all_archive_files = archive_read.getnames()
 
         obj_path = Path(archive_path)
-        self.name = obj_path.name
+        self.name = obj_path.name[:-3]
 
         if (POSTS_FILENAME in all_archive_files) and (TAGS_FILENAME in all_archive_files):
 
@@ -120,18 +136,3 @@ class DataArchive:
 
     def __del__(self):
         pass
-
-
-class Post:
-    def __init__(self):
-        pass
-
-    pass
-
-
-class PostAnswer(Post):
-    pass
-
-
-class Tag:
-    pass

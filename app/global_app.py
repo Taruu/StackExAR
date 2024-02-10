@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 import concurrent.futures
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from .routers import index, config
+
 
 app = FastAPI()
 
