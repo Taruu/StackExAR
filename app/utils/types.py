@@ -8,12 +8,12 @@ from typing import List
 from enum import Enum
 from pathlib import Path
 import functools
-import xml.etree.ElementTree as ElementTree
-
-from sqlalchemy import select, delete
+import xml.etree.ElementTree as XmlElementTree
+import time
+from sqlalchemy import select, delete, update, insert
 
 from ..database.function import get_database_session
-from ..database.models import Tag, QuestionPost, Base
+from ..database.models import Tag, QuestionPost, Base, AnswerPost
 
 from asyncio import get_event_loop, gather, sleep
 
@@ -35,36 +35,48 @@ class AsyncFileReader:
         pass
 
 
-class DataArchive:
+class DataArchiveReader:
     """Data archive object"""
     name = None
 
     post_archive_path = None
     tags_archive_path = None
+    database_path = None
 
-    reader = None
+    archive_post_reader = None
 
-    @staticmethod
-    def _sync_read_archive_by_address(archive_path, filename, start: int, length: int):
-        with SevenZipFile(archive_path, 'r') as archive_read:
-            file_reader = archive_read.read(targets=filename).get(filename)
-            file_reader.seek(start)
-            request_bytes = file_reader.read(length)
+    def _init_archive_post_reader(self):
+        if not self.archive_post_reader:
+            file = SevenZipFile(self.post_archive_path, 'r')
+            self.archive_post_reader = file.read(targets=[POSTS_FILENAME]).get(POSTS_FILENAME)
+
+    def __del__(self):
+        if self.archive_post_reader:
+            self.archive_post_reader.close()
+        pass
+
+    def _sync_read_archive_by_address(self, start: int, length: int):
+        self.archive_post_reader.seek(start)
+        request_bytes = self.archive_post_reader.read(length)
         return request_bytes
 
     @staticmethod
     def _sync_read_archive(archive_path, filename, bytes_queue):
         with SevenZipFile(archive_path, 'r') as archive_read:
             file_reader = archive_read.read(targets=filename).get(filename)
-
             for line in file_reader.readlines():
                 bytes_queue.put_nowait(line)
+
         return True
 
-    async def async_read_archive_by_address(self, archive_path, filename, start: int, length: int):
+    async def async_read_post_archive_by_address(self, start: int, length: int):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(global_app.app.process_pools, self._sync_read_archive_by_address,
-                                          archive_path, filename, start, length)
+        requested_bytes = await loop.run_in_executor(global_app.app.process_pools, self._sync_read_archive_by_address,
+                                                     start, length)
+        tag_obj = XmlElementTree.fromstring(requested_bytes.decode())
+        if tag_obj.tag == "row":
+            print(tag_obj)
+        return
 
     async def async_read_archive_generator(self, archive_path, filename):
         loop = asyncio.get_running_loop()
@@ -81,27 +93,87 @@ class DataArchive:
             except queue.Empty:
                 await asyncio.sleep(0)
 
+    async def index_posts(self):
+        time_start = time.time()
+        if self.archive_post_reader:
+            self.archive_post_reader.close()
+            self.archive_post_reader = None
+
+        # clean table
+        async_session = await get_database_session(self.database_path)
+        async with async_session() as session:
+            await session.execute(delete(AnswerPost))
+            await session.execute(delete(QuestionPost))
+
+            await session.commit()
+
+        xml_parser = XmlElementTree.XMLPullParser(['end'])
+        cursor_pos = 0
+        async for line in self.async_read_archive_generator(self.post_archive_path, POSTS_FILENAME):
+
+            xml_parser.feed(line)
+
+            for dict_xml_tag in xml_parser.read_events():
+                xml_tag: XmlElementTree.Element = dict_xml_tag[1]
+
+                if xml_tag.tag == "row":
+                    pass
+
+            cursor_pos += len(line)
+        else:
+            print(time.time() - time_start, self.post_archive_path, POSTS_FILENAME, cursor_pos)
+
     async def index_tags(self):
-        async_session = await get_database_session(f"{Path(self.post_archive_path).parent}/{self.name}.db")
+        """Index all tags in posts"""
+        async_session = await get_database_session(self.database_path)
         async with async_session() as session:
             stmt = (
                 delete(Tag)
             )
             await session.execute(stmt)
             await session.commit()
-        # print(self.name)
-        # xml_parser = ElementTree.XMLPullParser(['end'])
-        # start_points = 0
-        # async for line in self.async_read_archive_generator(self.tags_archive_path, TAGS_FILENAME):
-        #     xml_parser.feed(line)
-        #     for dict_xml_tag in xml_parser.read_events():
-        #         xml_tag: ElementTree.Element = dict_xml_tag[1]
-        #         if xml_tag.tag == "row":
-        #             await Tag.update_or_create(id=xml_tag.attrib.get('Id'),
-        #                                        name=xml_tag.attrib.get("TagName"),
-        #                                        count_usage=xml_tag.attrib.get("Count"))
-        #     start_points += len(line)
-        # pass
+
+        async with async_session() as session:
+            xml_parser = XmlElementTree.XMLPullParser(['end'])
+
+            count = 0
+            temp_list_tags = []
+            async for line in self.async_read_archive_generator(self.tags_archive_path, TAGS_FILENAME):
+                xml_parser.feed(line)
+
+                for dict_xml_tag in xml_parser.read_events():
+                    xml_tag: XmlElementTree.Element = dict_xml_tag[1]
+
+                    if xml_tag.tag == "row":
+                        temp_list_tags.append({
+                            "id": xml_tag.attrib['Id'],
+                            "name": xml_tag.attrib['TagName'],
+                            "count_usage": xml_tag.attrib['Count']
+                        })
+                        count += 1
+
+                if count >= 1000:
+                    stmt = (
+                        insert(Tag).values(temp_list_tags)
+                    )
+
+                    await session.execute(stmt)
+                    await session.flush()
+
+                    count = 0
+                    temp_list_tags = []
+
+            await session.commit()
+
+    def tags_list(self, offset=0, limit=100):
+        pass
+
+    def get_post(self, post_id):
+        pass
+
+    def query_posts(self, offset=0, limit=10, tags=List[str | int]):
+
+        pass
 
     def __init__(self, archive_path: List[str] | str):
         if not is_7zfile(archive_path):
@@ -134,5 +206,4 @@ class DataArchive:
         else:
             raise ValueError(f"Not correct archive: {archive_path}")
 
-    def __del__(self):
-        pass
+        self.database_path = f"{Path(self.post_archive_path).parent}/{self.name}.db"

@@ -7,7 +7,7 @@ from app.database.models import Base
 
 
 async def get_database_session(path: str):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{path}", echo=True)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

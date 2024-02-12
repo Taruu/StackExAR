@@ -5,7 +5,7 @@ from py7zr import SevenZipFile
 from .config import settings
 import glob
 
-from .types import DataArchive
+from .types import DataArchiveReader
 
 
 class ArchiveFeed:
@@ -23,11 +23,11 @@ class ArchiveFeed:
         data_archives_list = []
         for path in archive_list:
             try:
-                data_archives_list.append(DataArchive(path))
+                data_archives_list.append(DataArchiveReader(path))
             except ValueError:
                 continue
         task_list = []
         async with asyncio.TaskGroup() as tg:
             for data_archive in data_archives_list:
-                tg.create_task(data_archive.index_tags())
+                tg.create_task(data_archive.index_posts())
         return []
