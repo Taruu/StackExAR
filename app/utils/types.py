@@ -1,4 +1,5 @@
 import asyncio
+import io
 import multiprocessing
 import queue
 import time
@@ -27,6 +28,38 @@ POSTS_FILENAME = "Posts.xml"
 TAGS_FILENAME = "Tags.xml"
 
 
+class MagicStepIO(io.FileIO):
+    left_step_len = 0
+    bytes_magic = b"BZh91AY&SY"
+
+    def __init__(self, *args, **kwargs):
+        super(MagicStepIO, self).__init__(*args, **kwargs)
+
+        values = super().read(1024)
+        step = values.find(self.bytes_magic)
+        self.left_step_len = step
+        self.seek(0)
+
+    def fileno(self) -> int:
+        return -1
+
+    def tell(self):
+        # print("tell", super().tell() - self.left_step_len)
+        return super().tell() - self.left_step_len
+
+    def seek(self, __offset: int, __whence: int = 0) -> int:
+        # print("seek", __offset, __whence)
+        if __whence == 0:
+            return super().seek(__offset + self.left_step_len, __whence) - self.left_step_len
+        else:
+            return super().seek(__offset, __whence) - self.left_step_len
+
+    def read(self, __size: int = ...) -> bytes:
+        # print("read", __size, self.tell(), super().tell())
+        temp_bytes = super().read(__size)
+        return temp_bytes
+
+
 class AsyncFileReader:
     def __init__(self):
         pass
@@ -43,30 +76,27 @@ class DataArchiveReader:
     tags_archive_path = None
     database_path = None
 
-    archive_post_reader = None
-
-    def _init_archive_post_reader(self):
-        if not self.archive_post_reader:
+    @property
+    def archive_post_reader(self):
+        if self.post_archive_path != self.tags_archive_path:
+            return MagicStepIO(self.post_archive_path, mode="r")
+        else:
             file = SevenZipFile(self.post_archive_path, 'r')
-            self.archive_post_reader = file.read(targets=[POSTS_FILENAME]).get(POSTS_FILENAME)
+            return file.read(targets=[POSTS_FILENAME]).get(POSTS_FILENAME)
 
     def __del__(self):
         if self.archive_post_reader:
             self.archive_post_reader.close()
-        pass
 
     def _sync_read_archive_by_address(self, start: int, length: int):
         self.archive_post_reader.seek(start)
         request_bytes = self.archive_post_reader.read(length)
         return request_bytes
 
-    @staticmethod
-    def _sync_read_archive(archive_path, filename, bytes_queue):
-        with SevenZipFile(archive_path, 'r') as archive_read:
-            file_reader = archive_read.read(targets=filename).get(filename)
-            for line in file_reader.readlines():
-                bytes_queue.put_nowait(line)
-
+    def _sync_read_archive(self, archive_path, filename, bytes_queue):
+        self.archive_post_reader.seek(0)
+        for line in self.archive_post_reader.readlines():
+            bytes_queue.put_nowait(line)
         return True
 
     async def async_read_post_archive_by_address(self, start: int, length: int):
@@ -95,9 +125,6 @@ class DataArchiveReader:
 
     async def index_posts(self):
         time_start = time.time()
-        if self.archive_post_reader:
-            self.archive_post_reader.close()
-            self.archive_post_reader = None
 
         # clean table
         async_session = await get_database_session(self.database_path)
@@ -117,9 +144,11 @@ class DataArchiveReader:
                 xml_tag: XmlElementTree.Element = dict_xml_tag[1]
 
                 if xml_tag.tag == "row":
+                    print(xml_tag.attrib["Id"])
                     pass
 
             cursor_pos += len(line)
+            line = None
         else:
             print(time.time() - time_start, self.post_archive_path, POSTS_FILENAME, cursor_pos)
 

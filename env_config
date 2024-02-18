@@ -1,3 +1,3 @@
 count_workers = 4
-archive_folder = "data/archives"
-database_folder = "data/database"
+archive_folder = "/mnt/500disk/Games/archives/"
+database_folder = "/mnt/500disk/Games/archives/"
