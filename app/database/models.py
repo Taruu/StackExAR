@@ -31,8 +31,9 @@ class QuestionPost(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     start: Mapped[int]
     length: Mapped[int]
+    score: Mapped[int]
     accepted_answer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("answer_posts.id"))
-    accepted_answer: Mapped["AnswerPost"] = relationship(back_populates="accepted_answer_id")
+    accepted_answer: Mapped[Optional["AnswerPost"]] = relationship(back_populates="accepted_answer_id")
     answer_posts: Mapped[List["AnswerPost"]] = relationship(back_populates="question_post")
     tags: Mapped[List[Tag]] = relationship(
         secondary=post_tags, back_populates="parents"
@@ -44,6 +45,7 @@ class AnswerPost(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     start: Mapped[int]
     length: Mapped[int]
+    score: Mapped[int]
     question_post_id: Mapped[int] = mapped_column(ForeignKey("question_posts.id"))
     question_post: Mapped["QuestionPost"] = relationship(back_populates="answer_posts")
 

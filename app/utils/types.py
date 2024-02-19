@@ -1,6 +1,8 @@
 import asyncio
 import io
 import multiprocessing
+import os
+import pickle
 import queue
 import time
 from collections import deque
@@ -11,6 +13,8 @@ from pathlib import Path
 import functools
 import xml.etree.ElementTree as XmlElementTree
 import time
+
+from indexed_bzip2 import IndexedBzip2File
 from sqlalchemy import select, delete, update, insert
 
 from ..database.function import get_database_session
@@ -23,6 +27,8 @@ from tortoise import Tortoise
 
 from .. import global_app
 from ..utils import config
+
+import indexed_bzip2 as ibz2
 
 POSTS_FILENAME = "Posts.xml"
 TAGS_FILENAME = "Tags.xml"
@@ -60,61 +66,90 @@ class MagicStepIO(io.FileIO):
         return temp_bytes
 
 
-class AsyncFileReader:
-    def __init__(self):
-        pass
+class ArchiveWorker:
+    """File archive reader"""
+    # TODO make as child
+    indexed_bzip2_reader = False
+    reader = None
 
-    def read(self, bytes):
-        pass
+    def __init__(self, path, filename=None):
+        if "-" in path:
+            # big file )))
+            self.indexed_bzip2_reader = True
+
+            path_obj = Path(path)
+            block_offsets_index_path = f"{path_obj.parent}/{path_obj.name}-index.dat"
+
+            file_custom = MagicStepIO(path, 'r')
+
+            if not os.path.exists(block_offsets_index_path):
+                # index to save blocks
+                self.reader = ibz2.open(file_custom, parallelization=os.cpu_count())
+                block_offsets = self.reader.block_offsets()
+                with open(block_offsets_index_path, 'wb') as offsets_file:
+                    pickle.dump(block_offsets, offsets_file)
+                self.reader.close()
+            else:
+                with open(block_offsets_index_path, 'rb') as offsets_file:
+                    block_offsets = pickle.load(offsets_file)
+
+            self.reader = ibz2.open(file_custom, parallelization=os.cpu_count())
+            self.reader.set_block_offsets(block_offsets)
+
+        else:
+            if not filename:
+                raise ValueError("filename not set")
+            zip_file = SevenZipFile(path, 'r')
+            self.reader = zip_file.read(targets=[filename]).get(filename)
+
+
+class File(Enum):
+    POST_FILE = 1
+    TAGS_FILE = 2
 
 
 class DataArchiveReader:
     """Data archive object"""
     name = None
 
-    post_archive_path = None
-    tags_archive_path = None
+    post_archive_reader = None
+    tags_archive_reader = None
     database_path = None
 
-    @property
-    def archive_post_reader(self):
-        if self.post_archive_path != self.tags_archive_path:
-            return MagicStepIO(self.post_archive_path, mode="r")
+    def _sync_generator(self, file: File, bytes_queue):
+        if file.POST_FILE == file:
+            self.post_archive_reader.seek(0)
+            for line in self.post_archive_reader.readlines():
+                bytes_queue.put_nowait(line)
         else:
-            file = SevenZipFile(self.post_archive_path, 'r')
-            return file.read(targets=[POSTS_FILENAME]).get(POSTS_FILENAME)
+            self.tags_archive_reader.seek(0)
+            for line in self.tags_archive_reader.readlines():
+                bytes_queue.put_nowait(line)
 
-    def __del__(self):
-        if self.archive_post_reader:
-            self.archive_post_reader.close()
+    def _sync_address(self, file: File, start: int, length: int):
+        if file.POST_FILE == file:
+            self.post_archive_reader.seek(start)
+            return self.post_archive_reader.read(length)
+        else:
+            self.tags_archive_reader.seek(start)
+            return self.tags_archive_reader.read(length)
 
-    def _sync_read_archive_by_address(self, start: int, length: int):
-        self.archive_post_reader.seek(start)
-        request_bytes = self.archive_post_reader.read(length)
-        return request_bytes
-
-    def _sync_read_archive(self, archive_path, filename, bytes_queue):
-        self.archive_post_reader.seek(0)
-        for line in self.archive_post_reader.readlines():
-            bytes_queue.put_nowait(line)
-        return True
-
-    async def async_read_post_archive_by_address(self, start: int, length: int):
+    async def async_read_post_archive_by_address(self, file: File, start: int, length: int):
         loop = asyncio.get_running_loop()
-        requested_bytes = await loop.run_in_executor(global_app.app.process_pools, self._sync_read_archive_by_address,
+        requested_bytes = await loop.run_in_executor(global_app.app.process_pools, self._sync_address, file,
                                                      start, length)
         tag_obj = XmlElementTree.fromstring(requested_bytes.decode())
         if tag_obj.tag == "row":
             print(tag_obj)
         return
 
-    async def async_read_archive_generator(self, archive_path, filename):
-        loop = asyncio.get_running_loop()
+    async def async_readlines_generator(self, file: File):
 
+        loop = asyncio.get_running_loop()
         m = multiprocessing.Manager()
         bytes_queue: multiprocessing.Queue = m.Queue()
         sync_future: asyncio.Future = loop.run_in_executor(
-            global_app.app.process_pools, self._sync_read_archive, archive_path, filename, bytes_queue)
+            global_app.app.process_pools, self._sync_generator, file, bytes_queue)
 
         while (not bytes_queue.empty()) or (not sync_future.done()):
             try:
@@ -136,24 +171,63 @@ class DataArchiveReader:
 
         xml_parser = XmlElementTree.XMLPullParser(['end'])
         cursor_pos = 0
-        async for line in self.async_read_archive_generator(self.post_archive_path, POSTS_FILENAME):
+        count = 0
 
-            xml_parser.feed(line)
+        temp_list_posts = []
+        temp_list_answers = []
+        async with async_session() as session:
+            async for line in self.async_readlines_generator(File.POST_FILE):
 
-            for dict_xml_tag in xml_parser.read_events():
-                xml_tag: XmlElementTree.Element = dict_xml_tag[1]
+                xml_parser.feed(line)
+                line_length = len(line)
 
-                if xml_tag.tag == "row":
-                    print(xml_tag.attrib["Id"])
-                    pass
+                for dict_xml_tag in xml_parser.read_events():
+                    xml_tag: XmlElementTree.Element = dict_xml_tag[1]
+                    print(xml_tag.tag, xml_tag.attrib)
+                    if xml_tag.tag == "row":
+                        if xml_tag.attrib.get('PostTypeId') == '1':
+                            temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
+                            temp_list_posts.append({
+                                "id": xml_tag.attrib["Id"],
+                                "start": cursor_pos,
+                                "length": line_length,
+                                "accepted_answer_id": int(temp_accepted_answer_id) if temp_accepted_answer_id else None,
+                                "score": int(xml_tag.attrib.get("Score"))
+                            })
+                            count += 1
+                        elif xml_tag.attrib.get('PostTypeId') == '2':
+                            temp_question_post_id = xml_tag.attrib.get("ParentId")
+                            temp_list_answers.append({
+                                "id": xml_tag.attrib["Id"],
+                                "start": cursor_pos,
+                                "length": line_length,
+                                "question_post_id": int(temp_question_post_id) if temp_question_post_id else None,
+                                "score": int(xml_tag.attrib.get("Score"))
+                            })
+                            count += 1
 
-            cursor_pos += len(line)
-            line = None
-        else:
-            print(time.time() - time_start, self.post_archive_path, POSTS_FILENAME, cursor_pos)
+                    if count >= 1000:
+                        await session.execute(insert(QuestionPost).values(temp_list_posts))
+                        await session.execute(insert(AnswerPost).values(temp_list_answers))
+
+                        await session.flush()
+
+                        count = 0
+                        temp_list_posts = []
+                        temp_list_answers = []
+
+                cursor_pos += line_length
+                line = None
+            else:
+                print(time.time() - time_start, POSTS_FILENAME, cursor_pos)
+        await session.execute(insert(QuestionPost).values(temp_list_posts))
+        await session.execute(insert(AnswerPost).values(temp_list_answers))
+        await session.flush()
+        await session.commit()
 
     async def index_tags(self):
         """Index all tags in posts"""
+        print(self.database_path)
         async_session = await get_database_session(self.database_path)
         async with async_session() as session:
             stmt = (
@@ -167,7 +241,7 @@ class DataArchiveReader:
 
             count = 0
             temp_list_tags = []
-            async for line in self.async_read_archive_generator(self.tags_archive_path, TAGS_FILENAME):
+            async for line in self.async_readlines_generator(File.TAGS_FILE):
                 xml_parser.feed(line)
 
                 for dict_xml_tag in xml_parser.read_events():
@@ -205,6 +279,7 @@ class DataArchiveReader:
         pass
 
     def __init__(self, archive_path: List[str] | str):
+        print(archive_path)
         if not is_7zfile(archive_path):
             raise ValueError(f"Not a archvie: {archive_path}")
 
@@ -216,8 +291,8 @@ class DataArchiveReader:
 
         if (POSTS_FILENAME in all_archive_files) and (TAGS_FILENAME in all_archive_files):
 
-            self.post_archive_path = archive_path
-            self.tags_archive_path = archive_path
+            self.post_archive_reader = ArchiveWorker(archive_path, POSTS_FILENAME).reader
+            self.tags_archive_reader = ArchiveWorker(archive_path, TAGS_FILENAME).reader
 
         elif (POSTS_FILENAME in all_archive_files) and ("-" in obj_path.name):
             # Big archive use '-' for separate
@@ -228,11 +303,11 @@ class DataArchiveReader:
                 temp_all_archive_files = temp_read.getnames()
 
             if TAGS_FILENAME in temp_all_archive_files:
-                self.tags_archive_path = Path(tags_archive_path)
-                self.post_archive_path = obj_path
+                self.post_archive_reader = ArchiveWorker(archive_path, POSTS_FILENAME).reader
+                self.tags_archive_reader = ArchiveWorker(archive_path, TAGS_FILENAME).reader
             else:
                 raise ValueError(f"{tags_archive_path} not exist")
         else:
             raise ValueError(f"Not correct archive: {archive_path}")
 
-        self.database_path = f"{Path(self.post_archive_path).parent}/{self.name}.db"
+        self.database_path = f"{Path(archive_path).parent}/{self.name}.db"
