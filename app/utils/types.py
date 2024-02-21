@@ -4,6 +4,7 @@ import multiprocessing
 import os
 import pickle
 import queue
+import re
 import time
 from collections import deque
 from queue import Queue
@@ -13,6 +14,8 @@ from pathlib import Path
 import functools
 import xml.etree.ElementTree as XmlElementTree
 import time
+
+from sqlalchemy.testing import in_
 
 from indexed_bzip2 import IndexedBzip2File
 from sqlalchemy import select, delete, update, insert
@@ -25,9 +28,9 @@ from asyncio import get_event_loop, gather, sleep
 from py7zr import SevenZipFile, is_7zfile
 from tortoise import Tortoise
 
-from .. import global_app
+from .. import global_app  # monkey code
 from ..utils import config
-
+from loguru import logger
 import indexed_bzip2 as ibz2
 
 POSTS_FILENAME = "Posts.xml"
@@ -108,6 +111,7 @@ class File(Enum):
     TAGS_FILE = 2
 
 
+# TODO db session on class
 class DataArchiveReader:
     """Data archive object"""
     name = None
@@ -144,7 +148,7 @@ class DataArchiveReader:
         return
 
     async def async_readlines_generator(self, file: File):
-
+        cursor_pos = 0
         loop = asyncio.get_running_loop()
         m = multiprocessing.Manager()
         bytes_queue: multiprocessing.Queue = m.Queue()
@@ -154,13 +158,14 @@ class DataArchiveReader:
         while (not bytes_queue.empty()) or (not sync_future.done()):
             try:
                 value_temp: bytes = bytes_queue.get_nowait()
-                yield value_temp
+                yield cursor_pos, value_temp
+                cursor_pos += len(value_temp)
             except queue.Empty:
                 await asyncio.sleep(0)
 
     async def index_posts(self):
         time_start = time.time()
-
+        logger.info(f"start index posts: {self.name}")
         # clean table
         async_session = await get_database_session(self.database_path)
         async with async_session() as session:
@@ -170,64 +175,68 @@ class DataArchiveReader:
             await session.commit()
 
         xml_parser = XmlElementTree.XMLPullParser(['end'])
-        cursor_pos = 0
-        count = 0
+
+        post_count = 0
 
         temp_list_posts = []
         temp_list_answers = []
         async with async_session() as session:
-            async for line in self.async_readlines_generator(File.POST_FILE):
+            async for cursor, line in self.async_readlines_generator(File.POST_FILE):
 
                 xml_parser.feed(line)
                 line_length = len(line)
+                dict_xml_tag = list(xml_parser.read_events())
 
-                for dict_xml_tag in xml_parser.read_events():
-                    xml_tag: XmlElementTree.Element = dict_xml_tag[1]
-                    print(xml_tag.tag, xml_tag.attrib)
-                    if xml_tag.tag == "row":
-                        if xml_tag.attrib.get('PostTypeId') == '1':
-                            temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
-                            temp_list_posts.append({
-                                "id": xml_tag.attrib["Id"],
-                                "start": cursor_pos,
-                                "length": line_length,
-                                "accepted_answer_id": int(temp_accepted_answer_id) if temp_accepted_answer_id else None,
-                                "score": int(xml_tag.attrib.get("Score"))
-                            })
-                            count += 1
-                        elif xml_tag.attrib.get('PostTypeId') == '2':
-                            temp_question_post_id = xml_tag.attrib.get("ParentId")
-                            temp_list_answers.append({
-                                "id": xml_tag.attrib["Id"],
-                                "start": cursor_pos,
-                                "length": line_length,
-                                "question_post_id": int(temp_question_post_id) if temp_question_post_id else None,
-                                "score": int(xml_tag.attrib.get("Score"))
-                            })
-                            count += 1
+                if len(dict_xml_tag) < 1:
+                    continue
 
-                    if count >= 1000:
-                        await session.execute(insert(QuestionPost).values(temp_list_posts))
-                        await session.execute(insert(AnswerPost).values(temp_list_answers))
+                xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
 
-                        await session.flush()
+                if xml_tag.tag != "row":
+                    continue
 
-                        count = 0
-                        temp_list_posts = []
-                        temp_list_answers = []
+                new_tag = {
+                    "id": xml_tag.attrib["Id"],
+                    "start": cursor,
+                    "length": line_length,
+                    "score": int(xml_tag.attrib.get("Score"))
+                }
 
-                cursor_pos += line_length
+                if xml_tag.attrib.get('PostTypeId') == '1':
+                    if xml_tag.attrib.get('Tags'):
+                        tags = re.findall(r"<(.+?)>", xml_tag.attrib.get("Tags"))
+                    temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
+                    new_tag.update({
+                        "accepted_answer_id": int(temp_accepted_answer_id) if temp_accepted_answer_id else None,
+                    })
+                    temp_list_posts.append(new_tag)
+                    post_count += 1
+                elif xml_tag.attrib.get('PostTypeId') == '2':
+                    temp_question_post_id = xml_tag.attrib.get("ParentId")
+                    new_tag.update({
+                        "question_post_id": int(temp_question_post_id) if temp_question_post_id else None,
+                    })
+                    temp_list_answers.append(new_tag)
+                    post_count += 1
+
+                if post_count >= 1000:
+                    await session.execute(insert(QuestionPost).values(temp_list_posts))
+                    await session.execute(insert(AnswerPost).values(temp_list_answers))
+                    await session.flush()
+                    post_count = 0
+                    temp_list_posts = []
+                    temp_list_answers = []
+
                 line = None
             else:
-                print(time.time() - time_start, POSTS_FILENAME, cursor_pos)
-        await session.execute(insert(QuestionPost).values(temp_list_posts))
-        await session.execute(insert(AnswerPost).values(temp_list_answers))
-        await session.flush()
-        await session.commit()
+                print(time.time() - time_start, POSTS_FILENAME, )
+            await session.execute(insert(QuestionPost).values(temp_list_posts))
+            await session.execute(insert(AnswerPost).values(temp_list_answers))
+            await session.commit()
 
     async def index_tags(self):
         """Index all tags in posts"""
-        print(self.database_path)
+        logger.info(f"start index tags: {self.name}")
         async_session = await get_database_session(self.database_path)
         async with async_session() as session:
             stmt = (
@@ -241,35 +250,48 @@ class DataArchiveReader:
 
             count = 0
             temp_list_tags = []
-            async for line in self.async_readlines_generator(File.TAGS_FILE):
+            async for cursor, line in self.async_readlines_generator(File.TAGS_FILE):
                 xml_parser.feed(line)
 
-                for dict_xml_tag in xml_parser.read_events():
-                    xml_tag: XmlElementTree.Element = dict_xml_tag[1]
+                dict_xml_tag = list(xml_parser.read_events())
 
-                    if xml_tag.tag == "row":
-                        temp_list_tags.append({
-                            "id": xml_tag.attrib['Id'],
-                            "name": xml_tag.attrib['TagName'],
-                            "count_usage": xml_tag.attrib['Count']
-                        })
-                        count += 1
+                if len(dict_xml_tag) < 1:
+                    continue
+                xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
+
+                if xml_tag.tag != "row":
+                    continue
+
+                temp_list_tags.append({
+                    "id": xml_tag.attrib['Id'],
+                    "name": xml_tag.attrib['TagName'],
+                    "count_usage": xml_tag.attrib['Count']
+                })
+                count += 1
 
                 if count >= 1000:
-                    stmt = (
-                        insert(Tag).values(temp_list_tags)
-                    )
-
-                    await session.execute(stmt)
+                    await session.execute(insert(Tag).values(temp_list_tags))
                     await session.flush()
-
                     count = 0
                     temp_list_tags = []
 
+            await session.execute(insert(Tag).values(temp_list_tags))
             await session.commit()
+            logger.info(f"end index tags: {self.name}")
+        return True
 
-    def tags_list(self, offset=0, limit=100):
-        pass
+    async def tags_list(self, offset=0, limit=100):
+        offset = offset if offset > 0 else 1
+        async_session = await get_database_session(self.database_path)
+        async with async_session() as session:
+            print(Tag.__table__.c)
+            stmt = select(Tag.__table__).where(Tag.__table__.c.name == "spongebob")
+            print(stmt)
+            result = await session.execute(stmt)
+            for item in result.scalars().all():
+                print(item)
+
+            pass
 
     def get_post(self, post_id):
         pass
@@ -279,7 +301,6 @@ class DataArchiveReader:
         pass
 
     def __init__(self, archive_path: List[str] | str):
-        print(archive_path)
         if not is_7zfile(archive_path):
             raise ValueError(f"Not a archvie: {archive_path}")
 

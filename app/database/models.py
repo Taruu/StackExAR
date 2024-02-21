@@ -11,19 +11,19 @@ class Base(DeclarativeBase):
     pass
 
 
+post_tags = Table(
+    "post_tags",
+    Base.metadata,
+    Column("post_id", ForeignKey("question_posts.id"), primary_key=True),
+    Column("tag_id", ForeignKey("tags.id"), primary_key=True),
+)
+
+
 class Tag(Base):
     __tablename__ = "tags"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(unique=True)
     count_usage: Mapped[int]
-
-
-post_tags = Table(
-    "post_tags",
-    Base.metadata,
-    Column("post_id", ForeignKey("question_posts.id"), primary_key=True),
-    Column("tag_id", ForeignKey("answer_posts.id"), primary_key=True),
-)
 
 
 class QuestionPost(Base):
@@ -33,10 +33,12 @@ class QuestionPost(Base):
     length: Mapped[int]
     score: Mapped[int]
     accepted_answer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("answer_posts.id"))
-    accepted_answer: Mapped[Optional["AnswerPost"]] = relationship(back_populates="accepted_answer_id")
-    answer_posts: Mapped[List["AnswerPost"]] = relationship(back_populates="question_post")
+    accepted_answer: Mapped[Optional["AnswerPost"]] = relationship(back_populates="accepted_answer_id",
+                                                                   foreign_keys="answer_posts.id")
+    answer_posts: Mapped[List["AnswerPost"]] = relationship(back_populates="question_post",
+                                                            foreign_keys="answer_posts.question_post_id")
     tags: Mapped[List[Tag]] = relationship(
-        secondary=post_tags, back_populates="parents"
+        secondary=post_tags
     )
 
 
