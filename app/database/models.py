@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import Mapped
@@ -7,7 +8,7 @@ from sqlalchemy import String, Integer, ForeignKey, Column, Table
 from sqlalchemy.schema import MetaData
 
 
-class Base(DeclarativeBase):
+class Base(AsyncAttrs, DeclarativeBase):
     pass
 
 

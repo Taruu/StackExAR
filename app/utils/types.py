@@ -15,13 +15,14 @@ import functools
 import xml.etree.ElementTree as XmlElementTree
 import time
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.testing import in_
 
 from indexed_bzip2 import IndexedBzip2File
-from sqlalchemy import select, delete, update, insert
+from sqlalchemy import select, delete, insert
 
 from ..database.function import get_database_session
-from ..database.models import Tag, QuestionPost, Base, AnswerPost
+from ..database.models import Tag, QuestionPost, AnswerPost
 
 from asyncio import get_event_loop, gather, sleep
 
@@ -120,6 +121,13 @@ class DataArchiveReader:
     tags_archive_reader = None
     database_path = None
 
+    _session: AsyncSession = None
+
+    async def get_session(self) -> AsyncSession:
+        async_session = await get_database_session(self.database_path)
+        async with async_session() as session:
+            return session
+
     def _sync_generator(self, file: File, bytes_queue):
         if file.POST_FILE == file:
             self.post_archive_reader.seek(0)
@@ -167,12 +175,11 @@ class DataArchiveReader:
         time_start = time.time()
         logger.info(f"start index posts: {self.name}")
         # clean table
-        async_session = await get_database_session(self.database_path)
-        async with async_session() as session:
-            await session.execute(delete(AnswerPost))
-            await session.execute(delete(QuestionPost))
+        session = await self.get_session()
+        await session.execute(delete(AnswerPost))
+        await session.execute(delete(QuestionPost))
 
-            await session.commit()
+        await session.commit()
 
         xml_parser = XmlElementTree.XMLPullParser(['end'])
 
@@ -180,118 +187,116 @@ class DataArchiveReader:
 
         temp_list_posts = []
         temp_list_answers = []
-        async with async_session() as session:
-            async for cursor, line in self.async_readlines_generator(File.POST_FILE):
+        async for cursor, line in self.async_readlines_generator(File.POST_FILE):
 
-                xml_parser.feed(line)
-                line_length = len(line)
-                dict_xml_tag = list(xml_parser.read_events())
+            xml_parser.feed(line)
+            line_length = len(line)
+            dict_xml_tag = list(xml_parser.read_events())
 
-                if len(dict_xml_tag) < 1:
-                    continue
+            if len(dict_xml_tag) < 1:
+                continue
 
-                xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
+            xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
 
-                if xml_tag.tag != "row":
-                    continue
+            if xml_tag.tag != "row":
+                continue
 
-                new_tag = {
-                    "id": xml_tag.attrib["Id"],
-                    "start": cursor,
-                    "length": line_length,
-                    "score": int(xml_tag.attrib.get("Score"))
-                }
+            new_tag = {
+                "id": xml_tag.attrib["Id"],
+                "start": cursor,
+                "length": line_length,
+                "score": int(xml_tag.attrib.get("Score"))
+            }
 
-                if xml_tag.attrib.get('PostTypeId') == '1':
-                    if xml_tag.attrib.get('Tags'):
-                        tags = re.findall(r"<(.+?)>", xml_tag.attrib.get("Tags"))
-                    temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
-                    new_tag.update({
-                        "accepted_answer_id": int(temp_accepted_answer_id) if temp_accepted_answer_id else None,
-                    })
-                    temp_list_posts.append(new_tag)
-                    post_count += 1
-                elif xml_tag.attrib.get('PostTypeId') == '2':
-                    temp_question_post_id = xml_tag.attrib.get("ParentId")
-                    new_tag.update({
-                        "question_post_id": int(temp_question_post_id) if temp_question_post_id else None,
-                    })
-                    temp_list_answers.append(new_tag)
-                    post_count += 1
+            if xml_tag.attrib.get('PostTypeId') == '1':
+                if xml_tag.attrib.get('Tags'):
+                    tags = re.findall(r"<(.+?)>", xml_tag.attrib.get("Tags"))
+                temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
+                new_tag.update({
+                    "accepted_answer_id": int(temp_accepted_answer_id) if temp_accepted_answer_id else None,
+                })
+                temp_list_posts.append(new_tag)
+                post_count += 1
+            elif xml_tag.attrib.get('PostTypeId') == '2':
+                temp_question_post_id = xml_tag.attrib.get("ParentId")
+                new_tag.update({
+                    "question_post_id": int(temp_question_post_id) if temp_question_post_id else None,
+                })
+                temp_list_answers.append(new_tag)
+                post_count += 1
 
-                if post_count >= 1000:
-                    await session.execute(insert(QuestionPost).values(temp_list_posts))
-                    await session.execute(insert(AnswerPost).values(temp_list_answers))
-                    await session.flush()
-                    post_count = 0
-                    temp_list_posts = []
-                    temp_list_answers = []
+            if post_count >= 1000:
+                await session.execute(insert(QuestionPost).values(temp_list_posts))
+                await session.execute(insert(AnswerPost).values(temp_list_answers))
+                await session.flush()
+                post_count = 0
+                temp_list_posts = []
+                temp_list_answers = []
 
-                line = None
-            else:
-                print(time.time() - time_start, POSTS_FILENAME, )
-            await session.execute(insert(QuestionPost).values(temp_list_posts))
-            await session.execute(insert(AnswerPost).values(temp_list_answers))
-            await session.commit()
+            line = None
+        else:
+            print(time.time() - time_start, POSTS_FILENAME, )
+        await session.execute(insert(QuestionPost).values(temp_list_posts))
+        await session.execute(insert(AnswerPost).values(temp_list_answers))
+        await session.commit()
 
     async def index_tags(self):
         """Index all tags in posts"""
         logger.info(f"start index tags: {self.name}")
-        async_session = await get_database_session(self.database_path)
-        async with async_session() as session:
-            stmt = (
-                delete(Tag)
-            )
-            await session.execute(stmt)
-            await session.commit()
+        session = await self.get_session()
+        stmt = (
+            delete(Tag)
+        )
+        await session.execute(stmt)
+        await session.commit()
 
-        async with async_session() as session:
-            xml_parser = XmlElementTree.XMLPullParser(['end'])
+        xml_parser = XmlElementTree.XMLPullParser(['end'])
 
-            count = 0
-            temp_list_tags = []
-            async for cursor, line in self.async_readlines_generator(File.TAGS_FILE):
-                xml_parser.feed(line)
+        count = 0
+        temp_list_tags = []
+        async for cursor, line in self.async_readlines_generator(File.TAGS_FILE):
+            xml_parser.feed(line)
 
-                dict_xml_tag = list(xml_parser.read_events())
+            dict_xml_tag = list(xml_parser.read_events())
 
-                if len(dict_xml_tag) < 1:
-                    continue
-                xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
+            if len(dict_xml_tag) < 1:
+                continue
+            xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
 
-                if xml_tag.tag != "row":
-                    continue
+            if xml_tag.tag != "row":
+                continue
 
-                temp_list_tags.append({
-                    "id": xml_tag.attrib['Id'],
-                    "name": xml_tag.attrib['TagName'],
-                    "count_usage": xml_tag.attrib['Count']
-                })
-                count += 1
+            temp_list_tags.append({
+                "id": xml_tag.attrib['Id'],
+                "name": xml_tag.attrib['TagName'],
+                "count_usage": xml_tag.attrib['Count']
+            })
+            count += 1
 
-                if count >= 1000:
-                    await session.execute(insert(Tag).values(temp_list_tags))
-                    await session.flush()
-                    count = 0
-                    temp_list_tags = []
+            if count >= 1000:
+                await session.execute(insert(Tag).values(temp_list_tags))
+                await session.flush()
+                count = 0
+                temp_list_tags = []
 
-            await session.execute(insert(Tag).values(temp_list_tags))
-            await session.commit()
-            logger.info(f"end index tags: {self.name}")
+        await session.execute(insert(Tag).values(temp_list_tags))
+        await session.commit()
+        logger.info(f"end index tags: {self.name}")
+
         return True
 
     async def tags_list(self, offset=0, limit=100):
         offset = offset if offset > 0 else 1
-        async_session = await get_database_session(self.database_path)
-        async with async_session() as session:
-            print(Tag.__table__.c)
-            stmt = select(Tag.__table__).where(Tag.__table__.c.name == "spongebob")
-            print(stmt)
-            result = await session.execute(stmt)
-            for item in result.scalars().all():
-                print(item)
-
-            pass
+        start = time.time()
+        session = await self.get_session()
+        print(time.time() - start)
+        print(Tag.__table__.c)
+        stmt = select(Tag.__table__).order_by(Tag.__table__.c.count_usage.desc()).offset(offset).limit(limit)
+        result_orm = await session.execute(stmt)
+        result = {}
+        for item in result_orm:
+            result.update({item.id: {"name": item.name, "count_usage": item.count_usage}})
+        return result
 
     def get_post(self, post_id):
         pass

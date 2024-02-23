@@ -7,9 +7,11 @@ from .config import settings
 import glob
 
 from .types import DataArchiveReader
+#from ..global_app import app
 
 
 def get_archive_reader(name):
+    #if app.archives_readers.get()
     archive_list = glob.glob(f"{settings.archive_folder}/*.7z")
     data_archives_set = set([Path(path).name for path in archive_list])
     if name in data_archives_set:
