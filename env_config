@@ -1,3 +1,3 @@
-count_workers = 1
+count_workers = 32
 archive_folder = "/mnt/500disk/Games/archives"
 database_folder = "/mnt/500disk/Games/archives"

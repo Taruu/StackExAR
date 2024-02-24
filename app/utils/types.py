@@ -125,36 +125,25 @@ class DataArchiveReader:
     database_path = None
 
     def _sync_generator(self, file: File, bytes_queue: multiprocessing.Queue):
-        print("_sync_generator", file)
         if file.POST_FILE == file:
-            self.post_archive_reader.seek(0)
+            current_reader = self.post_archive_reader
+        else:
+            current_reader = self.tags_archive_reader
 
-            read_bytes = self.post_archive_reader.read(1)
-            read_buffer = read_bytes
-            while read_bytes != b"":
-                while not read_buffer.endswith(b"\n"):
-                    read_bytes = self.post_archive_reader.read(1)
-                    if read_bytes == b"":
-                        break
-                    read_buffer += read_bytes
-                bytes_queue.put(read_buffer)
-                read_buffer = b""
+        current_reader.seek(0)
+        data_buffer = current_reader.read(512 * 1024)
 
-        elif file.TAGS_FILE == file:
-            self.tags_archive_reader.seek(0)
-            read_bytes = self.tags_archive_reader.read(1)
-            read_buffer = read_bytes
-            while read_bytes != b"":
-                while not read_buffer.endswith(b"\n"):
-                    read_bytes = self.tags_archive_reader.read(1)
-                    if read_bytes == b"":
-                        break
-                    read_buffer += read_bytes
-                bytes_queue.put(read_buffer)
-                read_buffer = b""
-
-            # for line in self.tags_archive_reader.readlines():
-            #     bytes_queue.put_nowait(line)
+        while data_buffer != b"":
+            data_lines = data_buffer.split(b'\r\n')
+            #print(data_lines)
+            for line in data_lines:
+                print(line)
+                if not line.endswith(b">"):
+                    data_buffer = line
+                else:
+                    bytes_queue.put(line + b'\r\n')
+            data_buffer += current_reader.read(512 * 1024)
+        bytes_queue.put(data_buffer)
         return
 
     def _sync_address(self, file: File, start: int, length: int):
@@ -169,6 +158,7 @@ class DataArchiveReader:
         loop = asyncio.get_running_loop()
         requested_bytes = await loop.run_in_executor(global_app.app.process_pools, self._sync_address, file,
                                                      start, length)
+
         tag_obj = XmlElementTree.fromstring(requested_bytes.decode())
         if tag_obj.tag == "row":
             print(tag_obj)
@@ -179,13 +169,12 @@ class DataArchiveReader:
         cursor_pos = 0
         loop = asyncio.get_running_loop()
         m = multiprocessing.Manager()
-        bytes_queue: multiprocessing.Queue = m.Queue(24)
+        bytes_queue: multiprocessing.Queue = m.Queue(4096)
         sync_future: asyncio.Future = loop.run_in_executor(
             global_app.app.process_pools, self._sync_generator, file, bytes_queue)
+
         print("READLINES", (not bytes_queue.empty()) or (not sync_future.done()))
         while (not bytes_queue.empty()) or (not sync_future.done()):
-            if bytes_queue.qsize() <= 0:
-                await asyncio.sleep(0)
             try:
                 value_temp: bytes = bytes_queue.get_nowait()
                 yield cursor_pos, value_temp
@@ -213,9 +202,12 @@ class DataArchiveReader:
         temp_list_answers = []
         temp_tags_to_post = []
         async for cursor, line in self.async_readlines_generator(File.POST_FILE):
+            print(line)
+
             xml_parser.feed(line)
             line_length = len(line)
             dict_xml_tag = list(xml_parser.read_events())
+
             if len(dict_xml_tag) < 1:
                 continue
 
@@ -235,11 +227,11 @@ class DataArchiveReader:
                 if xml_tag.attrib.get('Tags'):
                     tags = re.findall(r"<(.+?)>", xml_tag.attrib.get("Tags"))
 
-                async with async_sessionmaker() as session:
-                    stmt = select(Tag.__table__).where(Tag.__table__.c.name.in_(tags))
-                    tags_values = await session.execute(stmt)
-
-                temp_tags_to_post.extend([{'tag_id': tag.id, "post_id": new_tag.get("id")} for tag in tags_values])
+                # async with async_sessionmaker() as session:
+                #     stmt = select(Tag.__table__).where(Tag.__table__.c.name.in_(tags))
+                #     tags_values = await session.execute(stmt)
+                #
+                # temp_tags_to_post.extend([{'tag_id': tag.id, "post_id": new_tag.get("id")} for tag in tags_values])
 
                 temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
                 new_tag.update({
@@ -255,14 +247,17 @@ class DataArchiveReader:
                 temp_list_answers.append(new_tag)
                 post_count += 1
 
+            xml_tag.clear()
+            del xml_tag
+
             if post_count >= 4096:
                 async with async_sessionmaker() as session:
                     await session.execute(insert(QuestionPost).values(temp_list_posts))
                     await session.execute(insert(AnswerPost).values(temp_list_answers))
-                    await session.execute(insert(post_tags).values(temp_tags_to_post))
+                    # await session.execute(insert(post_tags).values(temp_tags_to_post))
                     await session.commit()
                 global_count += post_count
-                logger.info(f"index {post_count} posts: {self.name} {global_count}/24,090,793")
+                logger.info(f"index {post_count} posts: {self.name} {global_count}/77,031,708")
                 logger.info(f"GC{gc.get_count()} {len(gc.garbage)}")
                 # gc.collect()
                 post_count = 0
@@ -273,7 +268,7 @@ class DataArchiveReader:
         async with async_sessionmaker() as session:
             await session.execute(insert(QuestionPost).values(temp_list_posts))
             await session.execute(insert(AnswerPost).values(temp_list_answers))
-            await session.execute(insert(post_tags).values(temp_tags_to_post))
+            # await session.execute(insert(post_tags).values(temp_tags_to_post))
             await session.commit()
         global_count += post_count
         logger.info(f"index 1024 posts: {self.name} {global_count}/24,090,793")
@@ -295,8 +290,10 @@ class DataArchiveReader:
 
         async with async_sessionmaker() as session:
             async for cursor, line in self.async_readlines_generator(File.TAGS_FILE):
-                xml_parser.feed(line)
 
+                print(line)
+
+                xml_parser.feed(line)
                 dict_xml_tag = list(xml_parser.read_events())
 
                 if len(dict_xml_tag) < 1:
