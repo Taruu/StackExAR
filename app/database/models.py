@@ -52,6 +52,12 @@ class AnswerPost(Base):
     question_post_id: Mapped[int] = mapped_column(ForeignKey("question_posts.id"))
     question_post: Mapped["QuestionPost"] = relationship(back_populates="answer_posts")
 
+
+class ConfigValues(Base):
+    __tablename__ = "configs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(unique=True)
+    value: Mapped[bytes]
 # from tortoise.models import Model
 # from tortoise import fields
 #

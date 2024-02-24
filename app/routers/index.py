@@ -1,9 +1,13 @@
 import asyncio
 import glob
 from pathlib import Path
+from typing import Annotated
+
 from loguru import logger
+
+from ..utils.archive import get_archive_reader
 from ..utils.config import settings
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from ..utils import archive
 from ..utils.types import DataArchiveReader
 
@@ -18,8 +22,11 @@ async def file_list():
 
 
 @router.put("/send")
-async def send(name: str):
-    pass
+async def send(archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)]):
+    result = await archive_reader.index_tags()
+    print(result)
+    await archive_reader.index_posts()
+    return True
 
 
 @router.put("/send_all")
@@ -27,7 +34,8 @@ async def send_all():
     logger.info("start index all")
     archive_list = glob.glob(f"{settings.archive_folder}/*.7z")
     logger.info("start index all tags")
-    data_archive_readers = [DataArchiveReader(path) for path in archive_list]
+
+    data_archive_readers = [get_archive_reader(Path(path).name) for path in archive_list]
     task_list = []
     async with asyncio.TaskGroup() as tg:
         for data_archive in data_archive_readers:

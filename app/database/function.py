@@ -14,11 +14,10 @@ database_session_makers = {}
 
 
 async def get_database_session(path: str):
-    async_sessionmaker_obj = database_session_makers.get(path)
-
-    if async_sessionmaker_obj is not None:
-        return async_sessionmaker_obj
-    engine = create_async_engine(f"sqlite+aiosqlite:///{path}", echo=True)
+    print(path)
+    if path in database_session_makers:
+        return database_session_makers.get(path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}", echo=False)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

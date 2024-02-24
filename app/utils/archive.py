@@ -7,14 +7,22 @@ from .config import settings
 import glob
 
 from .types import DataArchiveReader
-#from ..global_app import app
+
+# from ..global_app import app
 
 
-def get_archive_reader(name):
-    #if app.archives_readers.get()
+archive_readers = {}
+
+
+def get_archive_reader(name: str) -> DataArchiveReader:
+    print(f"GET READER {name}")
+    if name in archive_readers:
+        return archive_readers.get(name)
     archive_list = glob.glob(f"{settings.archive_folder}/*.7z")
     data_archives_set = set([Path(path).name for path in archive_list])
     if name in data_archives_set:
-        return DataArchiveReader(f"{settings.archive_folder}/{name}")
+        archive_reader = DataArchiveReader(f"{settings.archive_folder}/{name}")
+        archive_readers.update({name: archive_reader})
+        return archive_reader
     else:
         raise ValueError(f"{settings.archive_folder}/{name} does exist")

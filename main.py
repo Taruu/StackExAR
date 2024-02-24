@@ -1,4 +1,5 @@
 import concurrent.futures
+import gc
 import time
 
 from app import app
@@ -6,7 +7,7 @@ from app import app
 import uvicorn
 
 if __name__ == "__main__":
-
+    #gc.set_debug(gc.DEBUG_LEAK)
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 # from py7zr import SevenZipFile
