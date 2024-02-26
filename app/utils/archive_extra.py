@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import io
 import os
 import pickle
 import queue
+from asyncio import AbstractEventLoop
 from pathlib import Path
 from typing import IO
 
@@ -81,10 +83,11 @@ class ArchiveFileReader:
 
     def __init__(self, path, filename=None):
         self.pool = global_app.app.process_pools  # TODO as class argument
-        self.loop = asyncio.get_running_loop()
+        self.loop: AbstractEventLoop = asyncio.new_event_loop()
         self.bytes_queue: queue.Queue = queue.Queue(8192)
         self.path = path
         self.filename = filename
+        self.str_archive_md5 = self.archive_md5()
 
         if "-" in path:  # TODO regex detector
             logger.info(f"Take ibz2 for {path}")
@@ -112,10 +115,10 @@ class ArchiveFileReader:
             zip_file = SevenZipFile(path, 'r')
             self.reader = zip_file.read(targets=[filename]).get(filename)
 
-    def _sync_readlines(self):
+    def _sync_readlines(self, start_bytes=0):
         """Custom sync reader form files"""
         # TODO recheck default one ?
-        self.reader.seek(0)
+        self.reader.seek(start_bytes)
         data_buffer = self.reader.read(512 * 1024)
         buffer_last = b""
         while data_buffer != b"":
@@ -127,12 +130,14 @@ class ArchiveFileReader:
                 else:
                     buffer_last = line
             data_buffer = self.reader.read(512 * 1024)
+        return
 
     def _sync_get(self, start: int, length: int):
         self.reader.seek(start)
         return self.reader.read(length)
 
-    async def readlines(self):
+    async def readlines(self, start_bytes=0):
+        loop = asyncio.get_event_loop()
         """async readlines """
 
         if self.bytes_queue.qsize() > 0:
@@ -140,9 +145,10 @@ class ArchiveFileReader:
                 self.bytes_queue.get_nowait()
 
         cursor_pos = 0
-        sync_future = self.loop.run_in_executor(self.pool, self._sync_readlines)
-        while (not self.bytes_queue.empty()) or (not sync_future.done()):
-            if self.bytes_queue.qsize() > 0:
+        sync_future = loop.run_in_executor(self.pool, self._sync_readlines, start_bytes)
+        while (self.bytes_queue.qsize() != 0) or (not sync_future.done()):
+            if self.bytes_queue.qsize() == 0:
+                await asyncio.sleep(0)
                 continue
             try:
                 value_temp: bytes = self.bytes_queue.get_nowait()
@@ -152,5 +158,19 @@ class ArchiveFileReader:
                 await asyncio.sleep(0)
 
     async def get(self, start: int, length: int):
-        sync_future = self.loop.run_in_executor(self.pool, self._sync_get, start, length)
+        loop = asyncio.get_event_loop()
+        sync_future = loop.run_in_executor(self.pool, self._sync_get, start, length)
         return await sync_future
+
+    async def archive_md5(self):
+        hash_md5 = hashlib.md5()
+        with open(self.path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+
+def get_archive_filenames(path):
+    with SevenZipFile(path, 'r') as archive_read:
+        all_archive_files = archive_read.getnames()
+    return all_archive_files

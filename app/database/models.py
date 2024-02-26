@@ -15,7 +15,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 post_tags = Table(
     "post_tags",
     Base.metadata,
-    Column("post_id", ForeignKey("question_posts.id"), primary_key=True),
+    Column("post_id", ForeignKey("question_posts.id", ondelete="CASCADE"), primary_key=True, ),
     Column("tag_id", ForeignKey("tags.id"), primary_key=True),
 )
 
@@ -49,7 +49,7 @@ class AnswerPost(Base):
     start: Mapped[int]
     length: Mapped[int]
     score: Mapped[int]
-    question_post_id: Mapped[int] = mapped_column(ForeignKey("question_posts.id"))
+    question_post_id: Mapped[int] = mapped_column(ForeignKey("question_posts.id", ondelete="CASCADE"), )
     question_post: Mapped["QuestionPost"] = relationship(back_populates="answer_posts")
 
 

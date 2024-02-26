@@ -12,10 +12,10 @@ from pathlib import Path
 import xml.etree.ElementTree as XmlElementTree
 import time
 
-from sqlalchemy import select, delete, insert
+from sqlalchemy import select, delete, insert, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .archive_extra import get_archive_reader
+from .archive_extra import get_archive_reader, get_archive_filenames, ArchiveFileReader
 from ..database.function import get_database_session
 from ..database.models import Tag, QuestionPost, AnswerPost, post_tags, ConfigValues
 
@@ -66,21 +66,69 @@ class DatabaseWorker:
 
     def __init__(self, database_path: str):
         self.database_path = database_path
-        self.async_sessionmaker = get_database_session(database_path)
+        self.async_sessionmaker = None
         self.session: AsyncSession = None
 
     async def init_session(self):
-        self.session = await self.async_sessionmaker()
+        if not self.async_sessionmaker:
+            self.async_sessionmaker = await get_database_session(self.database_path)
+        self.session = self.async_sessionmaker()
+
+    async def get_cursor_start(self):
+        quest_count = await self.session.scalar(
+            select(func.count()).select_from(QuestionPost)
+        )
+        print("QUEST COUNT", quest_count)
+        if quest_count <= 10_000:
+            await self.clear_posts()
+            return 0, 0
+        quest_count -= 8192
+        quest_id = await self.session.scalar(
+            select(QuestionPost.__table__).order_by(QuestionPost.__table__.c.id.desc()).offset(8192).limit(1))
+        print("quest_id", quest_id)
+        quest_value = await self.session.get(QuestionPost, quest_id)
+        print("quest_value", str(quest_value))
+        # await self.session.scalar(delete(QuestionPost).where(QuestionPost.__table__.c.id > quest_id))
+        exit()
+
+    async def insert_post_data(self, question_posts: list, answers_posts: list, tags_to_post: list):
+        await self.session.execute(insert(QuestionPost).values(question_posts))
+        await self.session.execute(insert(AnswerPost).values(answers_posts))
+        await self.session.execute(insert(post_tags).values(tags_to_post))
+
+    async def clear_posts(self):
+        await self.session.execute(delete(AnswerPost))
+        await self.session.execute(delete(QuestionPost))
+        await self.session.execute(delete(post_tags))
+        await self.session.commit()
+
+    async def clear_tags(self):
+        await self.session.execute(delete(Tag))
+        await self.session.execute(delete(post_tags))
+        await self.session.commit()
+
+    async def insert_tags(self, tags_list_to_add):
+        await self.session.execute(insert(Tag).values(tags_list_to_add))
+
+    async def get_tags_ids(self, tags_list):
+        stmt = select(Tag.__table__).where(Tag.__table__.c.name.in_(tags_list))
+        return await self.session.execute(stmt)
+
+    async def flush(self):
+        return await self.session.flush()
+
+    async def commit(self):
+        return await self.session.commit()
 
     async def close(self):
-        if self.session is AsyncSession:
+        if self.session:
             await self.session.close()
+            self.session = None
 
 
 class ArchiveWorker:
     def __init__(self):
         pass
-
 
 
 class DataArchiveReader:
@@ -98,18 +146,14 @@ class DataArchiveReader:
         if not is_7zfile(archive_path):
             raise ValueError(f"Not a archvie: {archive_path}")
 
-        with SevenZipFile(archive_path, 'r') as archive_read:
-            all_archive_files = archive_read.getnames()
+        all_archive_files = get_archive_filenames(archive_path)
 
         obj_path = Path(archive_path)
         self.name = obj_path.name[:-3]
 
         if (POSTS_FILENAME in all_archive_files) and (TAGS_FILENAME in all_archive_files):
-
-            self.post_archive_reader = get_archive_reader(archive_path, POSTS_FILENAME)
-            self.tags_archive_reader = get_archive_reader(archive_path, TAGS_FILENAME)
-            self.post_archive_path = archive_path
-            self.tags_archive_reader = archive_path
+            self.post_archive_reader = ArchiveFileReader(archive_path, POSTS_FILENAME)
+            self.tags_archive_reader = ArchiveFileReader(archive_path, TAGS_FILENAME)
 
         elif (POSTS_FILENAME in all_archive_files) and ("-" in obj_path.name):
             # Big archive use '-' for separate
@@ -120,112 +164,29 @@ class DataArchiveReader:
                 temp_all_archive_files = temp_read.getnames()
 
             if TAGS_FILENAME in temp_all_archive_files:
-                self.post_archive_reader = get_archive_reader(archive_path, POSTS_FILENAME)
-                self.tags_archive_reader = get_archive_reader(tags_archive_path, TAGS_FILENAME)
-                self.post_archive_path = archive_path
-                self.tags_archive_path = tags_archive_path
+                self.post_archive_reader = ArchiveFileReader(archive_path, POSTS_FILENAME)
+                self.tags_archive_reader = ArchiveFileReader(tags_archive_path, TAGS_FILENAME)
             else:
                 raise ValueError(f"{tags_archive_path} not exist")
         else:
             raise ValueError(f"Not correct archive: {archive_path}")
-        self.database_path = f"{Path(archive_path).parent}/{self.name}.db"
 
-    async def check_valid_database(self, file: File):
-        async_sessionmaker = await get_database_session(self.database_path)
-        current_path = self.post_archive_path if file.POST_FILE == file else self.tags_archive_path
-
-        async with async_sessionmaker() as session:
-            value = await session.execute(
-                select(ConfigValues.__table__).where(ConfigValues.__table__.c.path == current_path))
-            value = value.fetchall()
-            print(value)
-            if not value:
-                hash_md5 = hashlib.md5()
-                with open(current_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(4096), b""):
-                        hash_md5.update(chunk)
-                stmt = insert(ConfigValues).values({"path": current_path, ""})
-                await session.execute(stmt)
-                await session.commit()
-                return False
-
-    def _sync_generator(self, file: File, ):
-        """Custom sync reader form files"""
-        if file.POST_FILE == file:
-            current_reader = self.post_archive_reader
-        else:
-            current_reader = self.tags_archive_reader
-
-        current_reader.seek(0)
-        data_buffer = current_reader.read(512 * 1024)
-        buffer_last = b""
-        while data_buffer != b"":
-            data_buffer = buffer_last + data_buffer
-            data_lines = data_buffer.rsplit(b'\r\n')
-            for line in data_lines:
-                if line.endswith(b">"):
-                    yield line + b'\r\n'
-                else:
-                    buffer_last = line
-            del data_lines
-            data_buffer = current_reader.read(512 * 1024)
-
-    def _sync_address(self, file: File, start: int, length: int):
-        """Take row by address"""
-        if file.POST_FILE == file:
-            self.post_archive_reader.seek(start)
-            return self.post_archive_reader.read(length)
-        else:
-            self.tags_archive_reader.seek(start)
-            return self.tags_archive_reader.read(length)
-
-    async def async_read_post(self, file: File, start: int, length: int):
-        loop = asyncio.get_running_loop()
-        requested_bytes = await loop.run_in_executor(global_app.app.process_pools, self._sync_address, file,
-                                                     start, length)
-
-        tag_obj = XmlElementTree.fromstring(requested_bytes.decode())
-        if tag_obj.tag == "row":
-            print(tag_obj)
-        return
-
-    async def async_readlines_generator(self, file: File):
-        print("ASYNC", file)
-        cursor_pos = 0
-        loop = asyncio.get_running_loop()
-        m = multiprocessing.Manager()
-        bytes_queue: queue.Queue = queue.Queue(8192)
-
-        sync_future: asyncio.Future = loop.run_in_executor(
-            global_app.app.process_pools, self._sync_generator, file, bytes_queue)
-
-        while (not bytes_queue.empty()) or (not sync_future.done()):
-            try:
-                value_temp: bytes = bytes_queue.get_nowait()
-                yield cursor_pos, value_temp
-                cursor_pos += len(value_temp)
-                # logger.info(f"qsize {bytes_queue.qsize()}")
-            except queue.Empty:
-                await asyncio.sleep(0)
+        self.database_worker = DatabaseWorker(f"{Path(archive_path).parent}/{self.name}.db")
 
     async def index_posts(self):
         logger.info(f"start index posts: {self.name}")
         # clean table
-        async_sessionmaker = await get_database_session(self.database_path)
-        session = async_sessionmaker()
-
-        await session.execute(delete(AnswerPost))
-        await session.execute(delete(QuestionPost))
-        await session.execute(delete(post_tags))
-        await session.commit()
+        await self.database_worker.init_session()
+        await self.database_worker.get_cursor_start()
 
         post_count = 0
         global_count = 0
+
         temp_list_posts = []
         temp_list_answers = []
         temp_tags_to_post = []
 
-        async for cursor, line in self.async_readlines_generator(File.POST_FILE):
+        async for cursor, line in self.post_archive_reader.readlines():
 
             line_length = len(line)
             try:
@@ -247,11 +208,9 @@ class DataArchiveReader:
                 if xml_tag.attrib.get('Tags'):
                     tags = re.findall(r"<(.+?)>", xml_tag.attrib.get("Tags"))
 
-                async with async_sessionmaker() as session:
-                    stmt = select(Tag.__table__).where(Tag.__table__.c.name.in_(tags))
-                    tags_values = await session.execute(stmt)
+                tags_ids = await self.database_worker.get_tags_ids(tags)
 
-                temp_tags_to_post.extend([{'tag_id': tag.id, "post_id": new_tag.get("id")} for tag in tags_values])
+                temp_tags_to_post.extend([{'tag_id': tag.id, "post_id": new_tag.get("id")} for tag in tags_ids])
 
                 temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
                 new_tag.update({
@@ -270,25 +229,18 @@ class DataArchiveReader:
             del xml_tag
 
             if post_count >= 4096:
-                # logger.debug(f"{getsize(xml_parser)}")
-                async with async_sessionmaker() as session:
-                    await session.execute(insert(QuestionPost).values(temp_list_posts))
-                    await session.execute(insert(AnswerPost).values(temp_list_answers))
-                    await session.execute(insert(post_tags).values(temp_tags_to_post))
-                    await session.commit()
-
+                await self.database_worker.insert_post_data(temp_list_posts, temp_list_answers, temp_tags_to_post)
+                await self.database_worker.commit()
                 global_count += post_count
                 logger.info(f"index {post_count} posts: {self.name} {global_count}/77,031,708")
                 post_count = 0
                 temp_list_posts.clear()
                 temp_list_answers.clear()
                 temp_tags_to_post.clear()
-                # temp_list_posts, temp_list_answers, temp_tags_to_post = [], [], []
-        async with async_sessionmaker() as session:
-            await session.execute(insert(QuestionPost).values(temp_list_posts))
-            await session.execute(insert(AnswerPost).values(temp_list_answers))
-            await session.execute(insert(post_tags).values(temp_tags_to_post))
-            await session.commit()
+
+        await self.database_worker.insert_post_data(temp_list_posts, temp_list_answers, temp_tags_to_post)
+        await self.database_worker.commit()
+        await self.database_worker.close()
 
         global_count += post_count
         logger.info(f"END INDEX {post_count} posts: {self.name} {global_count}/77,031,708")
@@ -299,16 +251,12 @@ class DataArchiveReader:
     async def index_tags(self):
         """Index all tags in posts"""
         logger.info(f"start index tags: {self.name}")
-        async_sessionmaker = await get_database_session(self.database_path)
-        async with async_sessionmaker() as session:
-            await session.execute(delete(Tag))
-            await session.execute(delete(post_tags))
-            await session.commit()
+        await self.database_worker.init_session()
+        await self.database_worker.clear_tags()
 
         count = 0
-        temp_list_tags = []
-        async for cursor, line in self.async_readlines_generator(File.TAGS_FILE):
-
+        insert_items = []
+        async for cursor, line in self.tags_archive_reader.readlines():
             try:
                 xml_tag = XmlElementTree.fromstring(line)
             except Exception:
@@ -317,23 +265,20 @@ class DataArchiveReader:
             if xml_tag.tag != "row":
                 continue
 
-            temp_list_tags.append({
-                "id": xml_tag.attrib['Id'],
-                "name": xml_tag.attrib['TagName'],
-                "count_usage": xml_tag.attrib['Count']
-            })
+            insert_items.append(
+                {"id": xml_tag.attrib['Id'], "name": xml_tag.attrib['TagName'], "count_usage": xml_tag.attrib['Count']})
             count += 1
 
             if count >= 1000:
-                async with async_sessionmaker() as session:
-                    await session.execute(insert(Tag).values(temp_list_tags))
-                    await session.commit()
+                await self.database_worker.insert_tags(insert_items)
+                await self.database_worker.commit()
                 count = 0
-                temp_list_tags = []
-        async with async_sessionmaker() as session:
-            await session.execute(insert(Tag).values(temp_list_tags))
-            await session.commit()
+                insert_items = []
+        await self.database_worker.insert_tags(insert_items)
+        await self.database_worker.commit()
+        await self.database_worker.close()
         logger.info(f"end index tags: {self.name}")
+
         return True
 
     async def tags_list(self, offset=0, limit=100):
