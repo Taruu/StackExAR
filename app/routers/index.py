@@ -9,7 +9,7 @@ from ..utils.archive import get_archive_reader
 from ..utils.config import settings
 from fastapi import APIRouter, Depends
 from ..utils import archive
-from ..utils.types import DataArchiveReader
+from ..utils.app_types import DataArchiveReader, File
 
 router = APIRouter(prefix="/indexing")
 
@@ -23,9 +23,10 @@ async def file_list():
 
 @router.put("/send")
 async def send(archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)]):
-    result = await archive_reader.index_tags()
-    print(result)
-    await archive_reader.index_posts()
+    await archive_reader.check_valid_database(File.POST_FILE)
+    # result = await archive_reader.index_tags()
+    # print(result)
+    # await archive_reader.index_posts()
     return True
 
 

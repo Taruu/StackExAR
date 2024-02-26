@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import multiprocessing
 import queue
 import re
+import sys
 from concurrent.futures.thread import ThreadPoolExecutor
 from typing import List
 from enum import Enum
@@ -11,6 +13,7 @@ import xml.etree.ElementTree as XmlElementTree
 import time
 
 from sqlalchemy import select, delete, insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .archive_extra import get_archive_reader
 from ..database.function import get_database_session
@@ -26,6 +29,32 @@ POSTS_FILENAME = "Posts.xml"
 TAGS_FILENAME = "Tags.xml"
 
 process_pools = ThreadPoolExecutor(max_workers=config.settings.count_workers)
+import sys
+from types import ModuleType, FunctionType
+from gc import get_referents
+
+# Custom objects know their class.
+# Function objects seem to know way too much, including modules.
+# Exclude modules as well.
+BLACKLIST = type, ModuleType, FunctionType
+
+
+def getsize(obj):
+    """sum size of object & members."""
+    if isinstance(obj, BLACKLIST):
+        raise TypeError('getsize() does not take argument of type: ' + str(type(obj)))
+    seen_ids = set()
+    size = 0
+    objects = [obj]
+    while objects:
+        need_referents = []
+        for obj in objects:
+            if not isinstance(obj, BLACKLIST) and id(obj) not in seen_ids:
+                seen_ids.add(id(obj))
+                size += sys.getsizeof(obj)
+                need_referents.append(obj)
+        objects = get_referents(*need_referents)
+    return size
 
 
 class File(Enum):
@@ -33,13 +62,37 @@ class File(Enum):
     TAGS_FILE = 2
 
 
+class DatabaseWorker:
+
+    def __init__(self, database_path: str):
+        self.database_path = database_path
+        self.async_sessionmaker = get_database_session(database_path)
+        self.session: AsyncSession = None
+
+    async def init_session(self):
+        self.session = await self.async_sessionmaker()
+
+    async def close(self):
+        if self.session is AsyncSession:
+            await self.session.close()
+
+
+class ArchiveWorker:
+    def __init__(self):
+        pass
+
+
+
 class DataArchiveReader:
     """Data archive object"""
     name = None
+    database_path = None
 
     post_archive_reader = None
     tags_archive_reader = None
-    database_path = None
+
+    post_archive_path = None
+    tags_archive_path = None
 
     def __init__(self, archive_path: List[str] | str):
         if not is_7zfile(archive_path):
@@ -55,6 +108,8 @@ class DataArchiveReader:
 
             self.post_archive_reader = get_archive_reader(archive_path, POSTS_FILENAME)
             self.tags_archive_reader = get_archive_reader(archive_path, TAGS_FILENAME)
+            self.post_archive_path = archive_path
+            self.tags_archive_reader = archive_path
 
         elif (POSTS_FILENAME in all_archive_files) and ("-" in obj_path.name):
             # Big archive use '-' for separate
@@ -67,13 +122,34 @@ class DataArchiveReader:
             if TAGS_FILENAME in temp_all_archive_files:
                 self.post_archive_reader = get_archive_reader(archive_path, POSTS_FILENAME)
                 self.tags_archive_reader = get_archive_reader(tags_archive_path, TAGS_FILENAME)
+                self.post_archive_path = archive_path
+                self.tags_archive_path = tags_archive_path
             else:
                 raise ValueError(f"{tags_archive_path} not exist")
         else:
             raise ValueError(f"Not correct archive: {archive_path}")
         self.database_path = f"{Path(archive_path).parent}/{self.name}.db"
 
-    def _sync_generator(self, file: File, bytes_queue: queue.Queue):
+    async def check_valid_database(self, file: File):
+        async_sessionmaker = await get_database_session(self.database_path)
+        current_path = self.post_archive_path if file.POST_FILE == file else self.tags_archive_path
+
+        async with async_sessionmaker() as session:
+            value = await session.execute(
+                select(ConfigValues.__table__).where(ConfigValues.__table__.c.path == current_path))
+            value = value.fetchall()
+            print(value)
+            if not value:
+                hash_md5 = hashlib.md5()
+                with open(current_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_md5.update(chunk)
+                stmt = insert(ConfigValues).values({"path": current_path, ""})
+                await session.execute(stmt)
+                await session.commit()
+                return False
+
+    def _sync_generator(self, file: File, ):
         """Custom sync reader form files"""
         if file.POST_FILE == file:
             current_reader = self.post_archive_reader
@@ -88,12 +164,11 @@ class DataArchiveReader:
             data_lines = data_buffer.rsplit(b'\r\n')
             for line in data_lines:
                 if line.endswith(b">"):
-                    bytes_queue.put(line + b'\r\n')
+                    yield line + b'\r\n'
                 else:
                     buffer_last = line
             del data_lines
             data_buffer = current_reader.read(512 * 1024)
-        return
 
     def _sync_address(self, file: File, start: int, length: int):
         """Take row by address"""
@@ -124,7 +199,6 @@ class DataArchiveReader:
         sync_future: asyncio.Future = loop.run_in_executor(
             global_app.app.process_pools, self._sync_generator, file, bytes_queue)
 
-        print("READLINES", (not bytes_queue.empty()) or (not sync_future.done()))
         while (not bytes_queue.empty()) or (not sync_future.done()):
             try:
                 value_temp: bytes = bytes_queue.get_nowait()
@@ -138,14 +212,12 @@ class DataArchiveReader:
         logger.info(f"start index posts: {self.name}")
         # clean table
         async_sessionmaker = await get_database_session(self.database_path)
-        async with async_sessionmaker() as session:
-            #session.execute(select(ConfigValues.__table__).where(ConfigValues.__table__.c.name == ""))
-            await session.execute(delete(AnswerPost))
-            await session.execute(delete(QuestionPost))
-            await session.execute(delete(post_tags))
-            await session.commit()
+        session = async_sessionmaker()
 
-        xml_parser = XmlElementTree.XMLPullParser(['end'])
+        await session.execute(delete(AnswerPost))
+        await session.execute(delete(QuestionPost))
+        await session.execute(delete(post_tags))
+        await session.commit()
 
         post_count = 0
         global_count = 0
@@ -155,14 +227,11 @@ class DataArchiveReader:
 
         async for cursor, line in self.async_readlines_generator(File.POST_FILE):
 
-            xml_parser.feed(line)
             line_length = len(line)
-            dict_xml_tag = list(xml_parser.read_events())
-
-            if len(dict_xml_tag) < 1:
+            try:
+                xml_tag = XmlElementTree.fromstring(line)
+            except Exception:
                 continue
-
-            xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
 
             if xml_tag.tag != "row":
                 continue
@@ -198,16 +267,15 @@ class DataArchiveReader:
                 temp_list_answers.append(new_tag)
 
             post_count += 1
-
-            xml_tag.clear()
             del xml_tag
 
             if post_count >= 4096:
+                # logger.debug(f"{getsize(xml_parser)}")
                 async with async_sessionmaker() as session:
                     await session.execute(insert(QuestionPost).values(temp_list_posts))
                     await session.execute(insert(AnswerPost).values(temp_list_answers))
                     await session.execute(insert(post_tags).values(temp_tags_to_post))
-                    await session.flush()
+                    await session.commit()
 
                 global_count += post_count
                 logger.info(f"index {post_count} posts: {self.name} {global_count}/77,031,708")
@@ -237,18 +305,14 @@ class DataArchiveReader:
             await session.execute(delete(post_tags))
             await session.commit()
 
-        xml_parser = XmlElementTree.XMLPullParser(['end'])
-
         count = 0
         temp_list_tags = []
         async for cursor, line in self.async_readlines_generator(File.TAGS_FILE):
 
-            xml_parser.feed(line)
-            dict_xml_tag = list(xml_parser.read_events())
-
-            if len(dict_xml_tag) < 1:
+            try:
+                xml_tag = XmlElementTree.fromstring(line)
+            except Exception:
                 continue
-            xml_tag: XmlElementTree.Element = dict_xml_tag[0][1]
 
             if xml_tag.tag != "row":
                 continue

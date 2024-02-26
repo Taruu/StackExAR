@@ -9,7 +9,7 @@ from ..utils.archive import get_archive_reader
 from ..utils.config import settings
 from fastapi import APIRouter, Depends
 from ..utils import archive
-from ..utils.types import DataArchiveReader
+from ..utils.app_types import DataArchiveReader
 
 router = APIRouter(prefix="/archive")
 

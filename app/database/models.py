@@ -54,51 +54,9 @@ class AnswerPost(Base):
 
 
 class ConfigValues(Base):
+    """Index values"""
     __tablename__ = "configs"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(unique=True)
-    value: Mapped[bytes]
-# from tortoise.models import Model
-# from tortoise import fields
-#
-#
-# class Post(Model):
-#     """Posts"""
-#     id = fields.BigIntField(pk=True)
-#
-#     solved = fields.BooleanField()
-#
-#     start_bytes = fields.BigIntField()
-#     length = fields.IntField()
-#
-#     accepted_answer_id = fields.BigIntField(unique=True)
-#     accepted_answer: fields.ReverseRelation["PostAnswer"]
-#
-#     posts: fields.ReverseRelation["PostAnswer"]
-#     tags: fields.ManyToManyRelation["Tag"] = fields.ManyToManyField(
-#         "models.Tag", related_name="posts", through="tag_to_posts"
-#     )
-#
-#
-# class PostAnswer(Model):
-#     """Answers for posts"""
-#     id = fields.BigIntField(pk=True)
-#     post_id = fields.BigIntField()
-#     start_bytes = fields.BigIntField()
-#     length = fields.IntField()
-#
-#     question_post: fields.ForeignKeyRelation[Post] = fields.ForeignKeyField(
-#         "models.Post", related_name="posts"
-#     )
-#
-#     accepted_post: fields.ForeignKeyRelation[Post] = fields.ForeignKeyField(
-#         "models.Post", related_name="accepted_answer", to_field="accepted_answer_id"
-#     )
-#
-#
-# class Tag(Model):
-#     """Tag for posts"""
-#     id = fields.BigIntField(pk=True)
-#     name = fields.CharField(unique=True, max_length=255)
-#     count_usage = fields.IntField()
-#     posts: fields.ManyToManyRelation[Post]
+    path: Mapped[str] = mapped_column(unique=True)
+    hash_file: Mapped[str] = mapped_column(unique=True)
+    finish_index: Mapped[bool]
