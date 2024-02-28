@@ -15,9 +15,9 @@ import time
 from sqlalchemy import select, delete, insert, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .archive_extra import get_archive_reader, get_archive_filenames, ArchiveFileReader
-from ..database.function import get_database_session
-from ..database.models import Tag, QuestionPost, AnswerPost, post_tags, ConfigValues
+from .archive_extra import get_archive_filenames, ArchiveFileReader
+from ..database.function import get_database_session, database_session_makers
+from ..database.models import Tag, QuestionPost, AnswerPost, TagToPost, ConfigValues, Base
 
 from py7zr import SevenZipFile, is_7zfile
 
@@ -72,6 +72,7 @@ class DatabaseWorker:
     async def init_session(self):
         if not self.async_sessionmaker:
             self.async_sessionmaker = await get_database_session(self.database_path)
+
         self.session = self.async_sessionmaker()
 
     async def get_cursor_start(self):
@@ -111,8 +112,12 @@ class DatabaseWorker:
         await self.session.execute(insert(Tag).values(tags_list_to_add))
 
     async def get_tags_ids(self, tags_list):
-        stmt = select(Tag.__table__).where(Tag.__table__.c.name.in_(tags_list))
-        return await self.session.execute(stmt)
+        stmt = select(Tag).where(Tag.name.in_(tags_list))
+        result = await self.session.execute(stmt)
+        for tag in result.scalars():
+
+            print(tag.id, tag.name)
+        return result
 
     async def flush(self):
         return await self.session.flush()
@@ -177,7 +182,7 @@ class DataArchiveReader:
         logger.info(f"start index posts: {self.name}")
         # clean table
         await self.database_worker.init_session()
-        await self.database_worker.get_cursor_start()
+        # await self.database_worker.get_cursor_start()
 
         post_count = 0
         global_count = 0

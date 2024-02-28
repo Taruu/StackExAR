@@ -12,12 +12,12 @@ class Base(AsyncAttrs, DeclarativeBase):
     pass
 
 
-post_tags = Table(
-    "post_tags",
-    Base.metadata,
-    Column("post_id", ForeignKey("question_posts.id", ondelete="CASCADE"), primary_key=True, ),
-    Column("tag_id", ForeignKey("tags.id"), primary_key=True),
-)
+class TagToPost(Base):
+    __tablename__ = "post_tags"
+    post_id: Mapped[int] = mapped_column(
+        ForeignKey("question_posts.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id"), primary_key=True)
 
 
 class Tag(Base):
@@ -33,14 +33,10 @@ class QuestionPost(Base):
     start: Mapped[int]
     length: Mapped[int]
     score: Mapped[int]
-    accepted_answer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("answer_posts.id"))
-    accepted_answer: Mapped[Optional["AnswerPost"]] = relationship(back_populates="accepted_answer_id",
-                                                                   foreign_keys="answer_posts.id")
-    answer_posts: Mapped[List["AnswerPost"]] = relationship(back_populates="question_post",
-                                                            foreign_keys="answer_posts.question_post_id")
-    tags: Mapped[List[Tag]] = relationship(
-        secondary=post_tags
-    )
+    accepted_answer_id: Mapped[Optional[int]]
+
+    answer_posts: Mapped[List["AnswerPost"]] = relationship(lazy="noload")
+    tags: Mapped[List[Tag]] = relationship(secondary="post_tags", lazy="noload")
 
 
 class AnswerPost(Base):
@@ -49,12 +45,17 @@ class AnswerPost(Base):
     start: Mapped[int]
     length: Mapped[int]
     score: Mapped[int]
-    question_post_id: Mapped[int] = mapped_column(ForeignKey("question_posts.id", ondelete="CASCADE"), )
-    question_post: Mapped["QuestionPost"] = relationship(back_populates="answer_posts")
+    question_post_id: Mapped[int] = mapped_column(
+        ForeignKey("question_posts.id", ondelete="CASCADE"),
+    )
+    question_post: Mapped["QuestionPost"] = relationship(
+        back_populates="answer_posts", lazy="noload"
+    )
 
 
 class ConfigValues(Base):
     """Index values"""
+
     __tablename__ = "configs"
     id: Mapped[int] = mapped_column(primary_key=True)
     path: Mapped[str] = mapped_column(unique=True)
