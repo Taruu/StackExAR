@@ -15,7 +15,10 @@ router = APIRouter(prefix="/archive")
 
 
 @router.get("/tags")
-async def tags_list(archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)], offset: int,
-                    limit=100, ):
+async def tags_list(
+    archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)],
+    offset: int,
+    limit=100,
+):
     tag_list = await archive_reader.tags_list(offset, limit)
     return tag_list

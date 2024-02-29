@@ -35,8 +35,8 @@ class QuestionPost(Base):
     score: Mapped[int]
     accepted_answer_id: Mapped[Optional[int]]
 
-    answer_posts: Mapped[List["AnswerPost"]] = relationship(lazy="noload")
-    tags: Mapped[List[Tag]] = relationship(secondary="post_tags", lazy="noload")
+    answer_posts: Mapped[List["AnswerPost"]] = relationship()
+    tags: Mapped[List[Tag]] = relationship(secondary="post_tags")
 
 
 class AnswerPost(Base):
@@ -47,9 +47,6 @@ class AnswerPost(Base):
     score: Mapped[int]
     question_post_id: Mapped[int] = mapped_column(
         ForeignKey("question_posts.id", ondelete="CASCADE"),
-    )
-    question_post: Mapped["QuestionPost"] = relationship(
-        back_populates="answer_posts", lazy="noload"
     )
 
 

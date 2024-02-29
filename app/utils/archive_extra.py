@@ -18,6 +18,7 @@ from loguru import logger
 
 class MagicStepIO(io.FileIO):
     """step bytes to read 7z bzip2 file"""
+
     left_step_len = 0
     bytes_magic = b"BZh91AY&SY"
 
@@ -39,7 +40,10 @@ class MagicStepIO(io.FileIO):
     def seek(self, __offset: int, __whence: int = 0) -> int:
         # print("seek", __offset, __whence)
         if __whence == 0:
-            return super().seek(__offset + self.left_step_len, __whence) - self.left_step_len
+            return (
+                super().seek(__offset + self.left_step_len, __whence)
+                - self.left_step_len
+            )
         else:
             return super().seek(__offset, __whence) - self.left_step_len
 
@@ -54,17 +58,17 @@ def get_archive_reader(path, filename=None) -> IO:
         logger.info(f"Take ibz2 for {path}")
         path_obj = Path(path)
         block_offsets_index_path = f"{path_obj.parent}/{path_obj.name}-index.dat"
-        file_custom_fileIO = MagicStepIO(path, 'r')
+        file_custom_fileIO = MagicStepIO(path, "r")
 
         if not os.path.exists(block_offsets_index_path):
             # index to save blocks
             reader = ibz2.open(file_custom_fileIO, parallelization=os.cpu_count())
             block_offsets = reader.block_offsets()
-            with open(block_offsets_index_path, 'wb') as offsets_file:
+            with open(block_offsets_index_path, "wb") as offsets_file:
                 pickle.dump(block_offsets, offsets_file)
             reader.close()
         else:
-            with open(block_offsets_index_path, 'rb') as offsets_file:
+            with open(block_offsets_index_path, "rb") as offsets_file:
                 block_offsets = pickle.load(offsets_file)
 
         reader = ibz2.open(file_custom_fileIO, parallelization=os.cpu_count())
@@ -73,13 +77,13 @@ def get_archive_reader(path, filename=None) -> IO:
     if not filename:
         raise ValueError("filename not set")
     logger.info(f"Take py7z for {path}")
-    zip_file = SevenZipFile(path, 'r')
+    zip_file = SevenZipFile(path, "r")
     reader = zip_file.read(targets=[filename]).get(filename)
     return reader
 
 
 class ArchiveFileReader:
-    """Async archive reader """
+    """Async archive reader"""
 
     def __init__(self, path, filename=None):
         self.pool = global_app.app.process_pools  # TODO as class argument
@@ -93,17 +97,17 @@ class ArchiveFileReader:
             logger.info(f"Take ibz2 for {path}")
             path_obj = Path(path)
             block_offsets_index_path = f"{path_obj.parent}/{path_obj.name}-index.dat"
-            file_custom_fileIO = MagicStepIO(path, 'r')
+            file_custom_fileIO = MagicStepIO(path, "r")
 
             if not os.path.exists(block_offsets_index_path):
                 # index to save blocks
                 reader = ibz2.open(file_custom_fileIO, parallelization=os.cpu_count())
                 block_offsets = reader.block_offsets()
-                with open(block_offsets_index_path, 'wb') as offsets_file:
+                with open(block_offsets_index_path, "wb") as offsets_file:
                     pickle.dump(block_offsets, offsets_file)
                 reader.close()
             else:
-                with open(block_offsets_index_path, 'rb') as offsets_file:
+                with open(block_offsets_index_path, "rb") as offsets_file:
                     block_offsets = pickle.load(offsets_file)
 
             self.reader = ibz2.open(file_custom_fileIO, parallelization=os.cpu_count())
@@ -112,7 +116,7 @@ class ArchiveFileReader:
             if not filename:
                 raise ValueError("filename not set")
             logger.info(f"Take py7z for {path}")
-            zip_file = SevenZipFile(path, 'r')
+            zip_file = SevenZipFile(path, "r")
             self.reader = zip_file.read(targets=[filename]).get(filename)
 
     def _sync_readlines(self, start_bytes=0):
@@ -123,10 +127,10 @@ class ArchiveFileReader:
         buffer_last = b""
         while data_buffer != b"":
             data_buffer = buffer_last + data_buffer
-            data_lines = data_buffer.rsplit(b'\r\n')
+            data_lines = data_buffer.rsplit(b"\r\n")
             for line in data_lines:
                 if line.endswith(b">"):
-                    self.bytes_queue.put(line + b'\r\n')
+                    self.bytes_queue.put(line + b"\r\n")
                 else:
                     buffer_last = line
             data_buffer = self.reader.read(512 * 1024)
@@ -171,6 +175,6 @@ class ArchiveFileReader:
 
 
 def get_archive_filenames(path):
-    with SevenZipFile(path, 'r') as archive_read:
+    with SevenZipFile(path, "r") as archive_read:
         all_archive_files = archive_read.getnames()
     return all_archive_files

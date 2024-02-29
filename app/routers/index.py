@@ -24,7 +24,7 @@ async def file_list():
 @router.put("/send")
 async def send(archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)]):
     # await archive_reader.check_valid_database(File.POST_FILE)
-    #await archive_reader.index_tags()
+    await archive_reader.index_tags()
     await archive_reader.index_posts()
     return True
 
