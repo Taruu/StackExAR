@@ -255,7 +255,6 @@ class DataArchiveReader:
         status = await self.database_worker.is_indexed(
             "posts", self.post_archive_reader.str_archive_md5
         )
-        print("status", status)
         if status is None:
             await self.database_worker.clear_posts()
             await self.database_worker.set_index(
@@ -415,7 +414,11 @@ class DataArchiveReader:
         return True
 
     async def tags_list(self, offset=0, limit=100):
-        return await self.database_worker.get_tags(offset, limit)
+        await self.database_worker.init_session()
+        items = await self.database_worker.get_tags(offset, limit)
+        tag_list = {tag.name: {"count_usage": tag.count_usage} for tag in items}
+        await self.database_worker.close()
+        return tag_list
 
     async def get_post(self, post_id: int):
         # TODO remade on upper level?
@@ -492,6 +495,7 @@ class DataArchiveReader:
 
         for item in queue_list:
             line_text = await self.post_archive_reader.get(item.start, item.length)
+
             dict_item: dict = XmlElementTree.fromstring(line_text).attrib
             type_id = int(dict_item.get("PostTypeId"))
             if type_id == 1:

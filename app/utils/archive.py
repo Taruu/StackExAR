@@ -15,7 +15,6 @@ archive_readers = {}
 
 
 def get_archive_reader(name: str) -> DataArchiveReader:
-    print(f"GET READER {name}")
     if name in archive_readers:
         return archive_readers.get(name)
     archive_list = glob.glob(f"{settings.archive_folder}/*.7z")

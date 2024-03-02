@@ -6,7 +6,6 @@ database_session_makers = {}
 
 
 async def get_database_session(path: str):
-    print("get_database_session", database_session_makers)
     if path in database_session_makers:
         return database_session_makers.get(path)
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}", echo=False)

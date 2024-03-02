@@ -16,13 +16,16 @@ router = APIRouter(prefix="/indexing")
 
 @router.get("/list")
 async def file_list():
-    archive_list = glob.glob(f"{settings.archive_folder}/*.7z")
+    archive_list = glob.glob(f"{settings.archive_folder}/*.com.7z")
+    archive_list.extend(glob.glob(f"{settings.archive_folder}/*-Posts.7z"))
     data_archives_list = [Path(path).name for path in archive_list]
     return data_archives_list
 
 
 @router.put("/send")
-async def send(archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)]):
+async def send(
+    archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)]
+):
     # await archive_reader.check_valid_database(File.POST_FILE)
     await archive_reader.index_tags()
     await archive_reader.index_posts()
@@ -36,7 +39,9 @@ async def send_all():
     archive_list.extend(glob.glob(f"{settings.archive_folder}/*-Posts.7z"))
     logger.info("start index all tags")
 
-    data_archive_readers = [get_archive_reader(Path(path).name) for path in archive_list]
+    data_archive_readers = [
+        get_archive_reader(Path(path).name) for path in archive_list
+    ]
     task_list = []
     async with asyncio.TaskGroup() as tg:
         for data_archive in data_archive_readers:

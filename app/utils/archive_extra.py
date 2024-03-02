@@ -34,11 +34,9 @@ class MagicStepIO(io.FileIO):
         return -1
 
     def tell(self):
-        # print("tell", super().tell() - self.left_step_len)
         return super().tell() - self.left_step_len
 
     def seek(self, __offset: int, __whence: int = 0) -> int:
-        # print("seek", __offset, __whence)
         if __whence == 0:
             return (
                 super().seek(__offset + self.left_step_len, __whence)
@@ -48,7 +46,6 @@ class MagicStepIO(io.FileIO):
             return super().seek(__offset, __whence) - self.left_step_len
 
     def read(self, __size: int = ...) -> bytes:
-        # print("read", __size, self.tell(), super().tell())
         temp_bytes = super().read(__size)
         return temp_bytes
 
@@ -121,7 +118,7 @@ class ArchiveFileReader:
             zip_file = SevenZipFile(path, "r")
             self.reader = zip_file.read(targets=[filename]).get(filename)
             self.size = self.reader.seek(0, 2)
-            print(self.size)
+
 
     def _sync_readlines(self, start_bytes=0, whence=0):
         """Custom sync reader form files"""
