@@ -9,7 +9,7 @@ from ..utils.archive import get_archive_reader
 from ..utils.config import settings
 from fastapi import APIRouter, Depends
 from ..utils import archive
-from ..utils.app_types import DataArchiveReader, File
+from ..utils.custom_types import DataArchiveReader, File
 
 router = APIRouter(prefix="/indexing")
 
@@ -32,7 +32,8 @@ async def send(archive_reader: Annotated[DataArchiveReader, Depends(get_archive_
 @router.put("/send_all")
 async def send_all():
     logger.info("start index all")
-    archive_list = glob.glob(f"{settings.archive_folder}/*.7z")
+    archive_list = glob.glob(f"{settings.archive_folder}/*.com.7z")
+    archive_list.extend(glob.glob(f"{settings.archive_folder}/*-Posts.7z"))
     logger.info("start index all tags")
 
     data_archive_readers = [get_archive_reader(Path(path).name) for path in archive_list]
@@ -43,18 +44,3 @@ async def send_all():
     async with asyncio.TaskGroup() as tg:
         for data_archive in data_archive_readers:
             tg.create_task(data_archive.index_posts())
-
-
-@router.get("/in_processing")
-async def get_in_processing():
-    pass
-
-
-@router.delete("/in_processing")
-async def delete_from_processing():
-    pass
-
-
-@router.get("/status")
-async def get_status(name: str):
-    pass

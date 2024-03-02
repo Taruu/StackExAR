@@ -55,6 +55,6 @@ class ConfigValues(Base):
 
     __tablename__ = "configs"
     id: Mapped[int] = mapped_column(primary_key=True)
-    path: Mapped[str] = mapped_column(unique=True)
-    hash_file: Mapped[str] = mapped_column(unique=True)
-    finish_index: Mapped[bool]
+    name: Mapped[str] = mapped_column(unique=True)
+    hash_file: Mapped[str]
+    index_done: Mapped[bool]

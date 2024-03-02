@@ -6,7 +6,7 @@ from py7zr import SevenZipFile
 from .config import settings
 import glob
 
-from .app_types import DataArchiveReader
+from .custom_types import DataArchiveReader
 
 # from ..global_app import app
 

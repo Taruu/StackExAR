@@ -12,7 +12,7 @@ from pathlib import Path
 import xml.etree.ElementTree as XmlElementTree
 import time
 
-from sqlalchemy import select, delete, insert, func, update
+from sqlalchemy import select, delete, insert, func, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .archive_extra import get_archive_filenames, ArchiveFileReader
@@ -117,6 +117,42 @@ class DatabaseWorker:
         await self.session.execute(delete(TagToPost))
         await self.session.commit()
 
+    async def is_indexed(self, name: str, hash_file: str) -> [bool | None]:
+        stmt = (
+            select(ConfigValues)
+            .where(
+                and_(
+                    ConfigValues.hash_file == hash_file,
+                    ConfigValues.name == name,
+                )
+            )
+            .limit(1)
+        )
+        result = await self.session.scalar(stmt)
+        if not result:
+            return None
+        return result.index_done
+
+    async def set_index(self, name: str, hash_file: str, index=False):
+        stmt = (
+            select(ConfigValues)
+            .where(
+                and_(
+                    ConfigValues.hash_file == hash_file,
+                    ConfigValues.name == name,
+                )
+            )
+            .limit(1)
+        )
+        result = await self.session.scalar(stmt)
+        if result:
+            result.index_done = True
+            return
+        stmt = insert(ConfigValues).values(
+            [{"name": name, "hash_file": hash_file, "index_done": index}]
+        )
+        await self.session.execute(stmt)
+
     async def clear_tags(self):
         await self.session.execute(delete(Tag))
         await self.session.execute(delete(TagToPost))
@@ -129,6 +165,20 @@ class DatabaseWorker:
         stmt = select(Tag).where(Tag.name.in_(tags_list))
         result = await self.session.scalars(stmt)
         return result
+
+    async def get_tags(self, offset: int, limit: int):
+        stmt = select(Tag).offset(offset).limit(limit)
+        return await self.session.scalars(stmt)
+
+    async def get_post(self, post_id: int):
+        return await self.session.get(QuestionPost, post_id)
+
+    async def get_posts(self, offset: int, limit: int, tags: List[str]):
+        stmt = select(QuestionPost).offset(offset).limit(limit)
+        for tag in tags:
+            stmt = stmt.where(QuestionPost.tags.any(Tag.name == tag))
+        res = await self.session.scalars(stmt)
+        return list(res)
 
     async def flush(self):
         return await self.session.flush()
@@ -202,26 +252,48 @@ class DataArchiveReader:
         logger.info(f"start index posts: {self.name}")
         # clean table
         await self.database_worker.init_session()
+        status = await self.database_worker.is_indexed(
+            "posts", self.post_archive_reader.str_archive_md5
+        )
+        print("status", status)
+        if status is None:
+            await self.database_worker.clear_posts()
+            await self.database_worker.set_index(
+                "posts", self.post_archive_reader.str_archive_md5, False
+            )
+            await self.database_worker.commit()
+        elif status is True:
+            await self.database_worker.close()
+            return
+
         global_count, start_bytes = await self.database_worker.get_cursor_start()
         post_count = 0
+        last_id = 0
+        temp_list_posts, temp_list_answers, temp_tags_to_post = [], [], []
 
-        temp_list_posts = []
-        temp_list_answers = []
-        temp_tags_to_post = []
-
+        # Get length
         async for cursor, line in self.post_archive_reader.readlines(
-            start_bytes=start_bytes
+            self.post_archive_reader.size - (512 * 1024), 0
         ):
-
-            line_length = len(line)
             try:
                 xml_tag = XmlElementTree.fromstring(line)
             except Exception:
                 continue
+            if xml_tag.tag == "row":
+                last_id = xml_tag.attrib.get("Id")
 
-            if xml_tag.tag != "row":
+        # start index posts
+        async for cursor, line in self.post_archive_reader.readlines(
+            start_bytes=start_bytes
+        ):
+            try:
+                xml_tag = XmlElementTree.fromstring(line)
+                if xml_tag.tag != "row":
+                    continue
+            except Exception:
                 continue
 
+            line_length = len(line)
             new_tag = {
                 "id": xml_tag.attrib["Id"],
                 "start": cursor,
@@ -232,14 +304,13 @@ class DataArchiveReader:
             if xml_tag.attrib.get("PostTypeId") == "1":
                 if xml_tag.attrib.get("Tags"):
                     tags = re.findall(r"<(.+?)>", xml_tag.attrib.get("Tags"))
-
-                tags_ids = await self.database_worker.get_tags_ids(tags)
-                temp_tags_to_post.extend(
-                    [
-                        {"tag_id": tag.id, "post_id": new_tag.get("id")}
-                        for tag in tags_ids
-                    ]
-                )
+                    tags_ids = await self.database_worker.get_tags_ids(tags)
+                    temp_tags_to_post.extend(
+                        [
+                            {"tag_id": tag.id, "post_id": new_tag.get("id")}
+                            for tag in tags_ids
+                        ]
+                    )
 
                 temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
                 new_tag.update(
@@ -265,9 +336,7 @@ class DataArchiveReader:
                     }
                 )
                 temp_list_answers.append(new_tag)
-
             post_count += 1
-            del xml_tag
 
             if post_count >= 4096:
                 await self.database_worker.insert_post_data(
@@ -275,33 +344,40 @@ class DataArchiveReader:
                 )
                 await self.database_worker.commit()
                 global_count += post_count
+
+                temp_list_posts, temp_list_answers, temp_tags_to_post = [], [], []
+
                 logger.info(
-                    f"index {post_count} posts: {self.name} {global_count}/77,031,708"
+                    f"index {post_count} posts: {self.name} {global_count}/{last_id}"
                 )
                 post_count = 0
-                temp_list_posts.clear()
-                temp_list_answers.clear()
-                temp_tags_to_post.clear()
 
         await self.database_worker.insert_post_data(
             temp_list_posts, temp_list_answers, temp_tags_to_post
         )
+        await self.database_worker.set_index(
+            "posts", self.post_archive_reader.str_archive_md5, True
+        )
         await self.database_worker.commit()
         await self.database_worker.close()
-
         global_count += post_count
-        logger.info(
-            f"END INDEX {post_count} posts: {self.name} {global_count}/77,031,708"
-        )
-        global_count += post_count
-        logger.info(f"index 1024 posts: {self.name} {global_count}/24,090,793")
-        logger.info(f"finish_index: {self.name}")
+        logger.info(f"end index {self.name} {global_count}/{last_id} indexed")
 
     async def index_tags(self):
         """Index all tags in posts"""
         logger.info(f"start index tags: {self.name}")
         await self.database_worker.init_session()
-        await self.database_worker.clear_tags()
+
+        if not await self.database_worker.is_indexed(
+            "tags", self.tags_archive_reader.str_archive_md5
+        ):
+            await self.database_worker.clear_tags()
+            await self.database_worker.clear_posts()
+            await self.database_worker.commit()
+        else:
+            await self.database_worker.close()
+            logger.info(f"tags already indexed : {self.name}")
+            return
 
         count = 0
         insert_items = []
@@ -329,33 +405,127 @@ class DataArchiveReader:
                 count = 0
                 insert_items = []
         await self.database_worker.insert_tags(insert_items)
+        await self.database_worker.set_index(
+            "tags", self.tags_archive_reader.str_archive_md5, True
+        )
         await self.database_worker.commit()
-        await self.database_worker.close()
+
         logger.info(f"end index tags: {self.name}")
 
         return True
 
     async def tags_list(self, offset=0, limit=100):
-        offset = offset if offset > 0 else 1
-        async_sessionmaker = await get_database_session(self.database_path)
-        async with async_sessionmaker() as session:
-            stmt = (
-                select(Tag.__table__)
-                .order_by(Tag.__table__.c.count_usage.desc())
-                .offset(offset)
-                .limit(limit)
+        return await self.database_worker.get_tags(offset, limit)
+
+    async def get_post(self, post_id: int):
+        # TODO remade on upper level?
+        await self.database_worker.init_session()
+        post_item = await self.database_worker.get_post(post_id)
+        answer_item_list: List[AnswerPost] = (
+            await post_item.awaitable_attrs.answer_posts
+        )
+        tags: List[Tag] = await post_item.awaitable_attrs.tags
+        await self.database_worker.close()
+
+        question_text = await self.post_archive_reader.get(
+            post_item.start, post_item.length
+        )
+        answer_texts = [
+            await self.post_archive_reader.get(answer_item.start, answer_item.length)
+            for answer_item in answer_item_list
+        ]
+
+        # Not need try become we use index tables
+
+        question_xml_tag = XmlElementTree.fromstring(question_text).attrib
+        temp_xml_answers: List[dict] = [
+            XmlElementTree.fromstring(answer_text).attrib
+            for answer_text in answer_texts
+        ]
+
+        dict_answers = {
+            int(xml_answer.get("Id")): {
+                "creation_date": xml_answer.get("CreationDate"),
+                "score": xml_answer.get("Score"),
+                "last_activity_date": xml_answer.get("LastActivityDate"),
+                "body": xml_answer.get("Body"),
+            }
+            for xml_answer in temp_xml_answers
+        }
+
+        fetched_post = {
+            "id": question_xml_tag.get("Id"),
+            "creation_date": question_xml_tag.get("CreationDate"),
+            "last_edit_date": question_xml_tag.get("LastEditDate"),
+            "last_activity_date": question_xml_tag.get("LastActivityDate"),
+            "title": question_xml_tag.get("Title"),
+            "body": question_xml_tag.get("Body"),
+            "tags": [tag.name for tag in tags],
+            "score": question_xml_tag.get("Score"),
+            "answers": dict_answers,
+        }
+
+        if post_item.accepted_answer_id:
+            answer = fetched_post["answers"].pop(post_item.accepted_answer_id)
+            fetched_post.update({"accepted_answer": answer})
+
+        return fetched_post
+
+    async def query_posts(self, offset=0, limit=10, tags: List[str] = []):
+        # TODO make custom types
+        fetched_posts = {}
+        answers_items = []
+        await self.database_worker.init_session()
+        post_items = await self.database_worker.get_posts(offset, limit, tags)
+        for post_item in post_items:
+            tags: List[Tag] = await post_item.awaitable_attrs.tags
+            fetched_posts.update(
+                {post_item.id: {"tags": [tag.name for tag in tags], "answers": {}}}
             )
-            result_orm = await session.execute(stmt)
-        result = {}
-        for item in result_orm:
-            result.update(
-                {item.id: {"name": item.name, "count_usage": item.count_usage}}
-            )
-        return result
+            answers_items.extend(await post_item.awaitable_attrs.answer_posts)
+        await self.database_worker.close()
 
-    def get_post(self, post_id):
-        pass
+        queue_list: List[QuestionPost | AnswerPost] = []
+        queue_list.extend(post_items)
+        queue_list.extend(answers_items)
+        queue_list.sort(key=lambda item: item.start)
 
-    def query_posts(self, offset=0, limit=10, tags=List[str | int]):
+        for item in queue_list:
+            line_text = await self.post_archive_reader.get(item.start, item.length)
+            dict_item: dict = XmlElementTree.fromstring(line_text).attrib
+            type_id = int(dict_item.get("PostTypeId"))
+            if type_id == 1:
+                post_id = int(dict_item.get("Id"))
+                fetched_posts[post_id].update(
+                    {
+                        "creation_date": dict_item.get("CreationDate"),
+                        "last_edit_date": dict_item.get("LastEditDate"),
+                        "last_activity_date": dict_item.get("LastActivityDate"),
+                        "title": dict_item.get("Title"),
+                        "body": dict_item.get("Body"),
+                        "score": dict_item.get("Score"),
+                    }
+                )
+            elif type_id == 2:
+                post_id = int(dict_item.get("ParentId"))
+                answer_id = int(dict_item.get("Id"))
+                fetched_posts[post_id]["answers"].update(
+                    {
+                        answer_id: {
+                            "creation_date": dict_item.get("CreationDate"),
+                            "score": dict_item.get("Score"),
+                            "last_activity_date": dict_item.get("LastActivityDate"),
+                            "body": dict_item.get("Body"),
+                        }
+                    }
+                )
+            else:
+                continue
+        for post_item in post_items:
+            if post_item.accepted_answer_id:
+                answer = fetched_posts[post_item.id]["answers"].pop(
+                    post_item.accepted_answer_id
+                )
+                fetched_posts[post_item.id].update({"accepted_answer": answer})
 
-        pass
+        return fetched_posts

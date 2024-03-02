@@ -91,6 +91,7 @@ class ArchiveFileReader:
         self.bytes_queue: queue.Queue = queue.Queue(8192)
         self.path = path
         self.filename = filename
+        self.size = 0
         self.str_archive_md5 = self.archive_md5()
 
         if "-" in path:  # TODO regex detector
@@ -112,17 +113,20 @@ class ArchiveFileReader:
 
             self.reader = ibz2.open(file_custom_fileIO, parallelization=os.cpu_count())
             self.reader.set_block_offsets(block_offsets)
+            self.size = self.reader.size()
         else:
             if not filename:
                 raise ValueError("filename not set")
             logger.info(f"Take py7z for {path}")
             zip_file = SevenZipFile(path, "r")
             self.reader = zip_file.read(targets=[filename]).get(filename)
+            self.size = self.reader.seek(0, 2)
+            print(self.size)
 
-    def _sync_readlines(self, start_bytes=0):
+    def _sync_readlines(self, start_bytes=0, whence=0):
         """Custom sync reader form files"""
         # TODO recheck default one ?
-        self.reader.seek(start_bytes)
+        self.reader.seek(start_bytes, whence)
         data_buffer = self.reader.read(512 * 1024)
         buffer_last = b""
         while data_buffer != b"":
@@ -140,16 +144,17 @@ class ArchiveFileReader:
         self.reader.seek(start)
         return self.reader.read(length)
 
-    async def readlines(self, start_bytes=0):
+    async def readlines(self, start_bytes=0, whence=0):
         loop = asyncio.get_event_loop()
         """async readlines """
-
         if self.bytes_queue.qsize() > 0:
             while self.bytes_queue.qsize():
                 self.bytes_queue.get_nowait()
 
         cursor_pos = 0
-        sync_future = loop.run_in_executor(self.pool, self._sync_readlines, start_bytes)
+        sync_future = loop.run_in_executor(
+            self.pool, self._sync_readlines, start_bytes, whence
+        )
         while (self.bytes_queue.qsize() != 0) or (not sync_future.done()):
             if self.bytes_queue.qsize() == 0:
                 await asyncio.sleep(0)
@@ -166,11 +171,13 @@ class ArchiveFileReader:
         sync_future = loop.run_in_executor(self.pool, self._sync_get, start, length)
         return await sync_future
 
-    async def archive_md5(self):
+    def archive_md5(self):
         hash_md5 = hashlib.md5()
-        with open(self.path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
+        with open(self.path, "rb") as file:
+            file.seek(0)
+            hash_md5.update(file.read(512 * 1024))
+            file.seek((512 * 1024) * 4, 2)
+            hash_md5.update(file.read(512 * 1024))
         return hash_md5.hexdigest()
 
 
