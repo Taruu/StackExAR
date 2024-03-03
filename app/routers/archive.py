@@ -10,6 +10,13 @@ from ..utils.custom_types import DataArchiveReader
 
 router = APIRouter(prefix="/archive")
 
+@router.get("/list")
+async def file_list():
+    """## list archive in folder"""
+    archive_list = glob.glob(f"{settings.archive_folder}/*.com.7z")
+    archive_list.extend(glob.glob(f"{settings.archive_folder}/*-Posts.7z"))
+    data_archives_list = [Path(path).name for path in archive_list]
+    return data_archives_list
 
 @router.get("/load")
 async def load(
@@ -19,7 +26,7 @@ async def load(
     return
 
 
-@router.get("/load_all")
+@router.get("/load/all")
 async def load_all():
     """## load archives in cache"""
     archive_list = glob.glob(f"{settings.archive_folder}/*.com.7z")

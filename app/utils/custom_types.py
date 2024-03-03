@@ -424,6 +424,9 @@ class DataArchiveReader:
         # TODO remade on upper level?
         await self.database_worker.init_session()
         post_item = await self.database_worker.get_post(post_id)
+        if not post_item:
+            await self.database_worker.close()
+            return None
         answer_item_list: List[AnswerPost] = (
             await post_item.awaitable_attrs.answer_posts
         )
@@ -480,6 +483,9 @@ class DataArchiveReader:
         answers_items = []
         await self.database_worker.init_session()
         post_items = await self.database_worker.get_posts(offset, limit, tags)
+        if not post_items:
+            await self.database_worker.close()
+            return None
         for post_item in post_items:
             tags: List[Tag] = await post_item.awaitable_attrs.tags
             fetched_posts.update(

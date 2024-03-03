@@ -119,10 +119,10 @@ class ArchiveFileReader:
             self.reader = zip_file.read(targets=[filename]).get(filename)
             self.size = self.reader.seek(0, 2)
 
-
     def _sync_readlines(self, start_bytes=0, whence=0):
         """Custom sync reader form files"""
         # TODO recheck default one ?
+        start_bytes = start_bytes if start_bytes > 0 else 0
         self.reader.seek(start_bytes, whence)
         data_buffer = self.reader.read(512 * 1024)
         buffer_last = b""
