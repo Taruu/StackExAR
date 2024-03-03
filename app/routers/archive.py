@@ -3,12 +3,9 @@ import glob
 from pathlib import Path
 from typing import Annotated, List
 
-from loguru import logger
-
 from ..utils.archive import get_archive_reader
 from ..utils.config import settings
 from fastapi import APIRouter, Depends, Query
-from ..utils import archive
 from ..utils.custom_types import DataArchiveReader
 
 router = APIRouter(prefix="/archive")
