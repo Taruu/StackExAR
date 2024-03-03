@@ -1,3 +1,5 @@
-count_workers = 10
+count_workers = 32
 archive_folder = "/mnt/500disk/Games/archives"
 database_folder = "/mnt/500disk/Games/archives"
+host = "0.0.0.0"
+port = "8000"

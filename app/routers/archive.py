@@ -18,11 +18,13 @@ router = APIRouter(prefix="/archive")
 async def load(
     archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)],
 ):
+    """## load archive in cache"""
     return
 
 
 @router.get("/load_all")
 async def load_all():
+    """## load archives in cache"""
     archive_list = glob.glob(f"{settings.archive_folder}/*.com.7z")
     archive_list.extend(glob.glob(f"{settings.archive_folder}/*-Posts.7z"))
     data_archives_list = [Path(path).name for path in archive_list]
@@ -37,6 +39,7 @@ async def tags_list(
     offset: int,
     limit=100,
 ):
+    """## get tags for archive"""
     tag_list = await archive_reader.tags_list(offset, limit)
     return tag_list
 
@@ -46,6 +49,7 @@ async def get_post(
     archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)],
     post_id: int,
 ):
+    """## get post by id"""
     post = await archive_reader.get_post(post_id)
     return post
 
@@ -57,5 +61,5 @@ async def get_posts(
     tags: List[str] = Query([]),
     limit=100,
 ):
-
+    """## get post with filters"""
     return await archive_reader.query_posts(offset, limit, tags)

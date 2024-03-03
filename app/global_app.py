@@ -1,8 +1,6 @@
 from fastapi import FastAPI
 import concurrent.futures
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from .routers import index, config, archive
 
 app = FastAPI()
@@ -13,3 +11,5 @@ app.process_pools = concurrent.futures.ThreadPoolExecutor(max_workers=config.con
 app.include_router(index.router)
 app.include_router(config.router)
 app.include_router(archive.router)
+
+#TODO del this shit

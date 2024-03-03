@@ -15,9 +15,9 @@ uvicorn = "^0.27.0.post1"
 pydantic-settings = "^2.1.0"
 loguru = "^0.7.2"
 tqdm = "^4.66.2"
-indexed_bzip2 = {file = "indexed_bzip2/python/indexed_bzip2/dist/indexed_bzip2-1.5.0-cp311-cp311-linux_x86_64.whl"}
 greenlet = "^3.0.3"
 sqlalchemy = "^2.0.27"
+indexed-bzip2 = "1.6.0"
 
 [build-system]
 requires = ["poetry-core"]

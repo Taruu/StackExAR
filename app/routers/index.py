@@ -8,33 +8,36 @@ from loguru import logger
 from ..utils.archive import get_archive_reader
 from ..utils.config import settings
 from fastapi import APIRouter, Depends
-from ..utils import archive
-from ..utils.custom_types import DataArchiveReader, File
+from ..utils.custom_types import DataArchiveReader
 
 router = APIRouter(prefix="/indexing")
 
 
 @router.get("/list")
 async def file_list():
+    """## list archive in folder"""
     archive_list = glob.glob(f"{settings.archive_folder}/*.com.7z")
     archive_list.extend(glob.glob(f"{settings.archive_folder}/*-Posts.7z"))
     data_archives_list = [Path(path).name for path in archive_list]
     return data_archives_list
 
 
-@router.put("/send")
+@router.put("/process")
 async def send(
     archive_reader: Annotated[DataArchiveReader, Depends(get_archive_reader)]
 ):
-    # await archive_reader.check_valid_database(File.POST_FILE)
+    """## send archive to index"""
+    logger.info(f"start index {archive_reader.name} archive")
     await archive_reader.index_tags()
     await archive_reader.index_posts()
+    logger.info(f"end index {archive_reader.name} archive")
     return True
 
 
-@router.put("/send_all")
+@router.put("/process/all")
 async def send_all():
-    logger.info("start index all")
+    """## send all archives to index"""
+    logger.info("start index all archives")
     archive_list = glob.glob(f"{settings.archive_folder}/*.com.7z")
     archive_list.extend(glob.glob(f"{settings.archive_folder}/*-Posts.7z"))
     logger.info("start index all tags")
@@ -42,7 +45,7 @@ async def send_all():
     data_archive_readers = [
         get_archive_reader(Path(path).name) for path in archive_list
     ]
-    task_list = []
+
     async with asyncio.TaskGroup() as tg:
         for data_archive in data_archive_readers:
             tg.create_task(data_archive.index_tags())
