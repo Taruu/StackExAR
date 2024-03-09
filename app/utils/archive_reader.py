@@ -5,15 +5,19 @@ import os
 import pickle
 import queue
 from asyncio import AbstractEventLoop
+from concurrent.futures.thread import ThreadPoolExecutor
 from pathlib import Path
 from typing import IO
 
 import indexed_bzip2 as ibz2
 from py7zr import SevenZipFile, is_7zfile
 
-from app import global_app
+from app.utils import config
 from indexed_bzip2 import IndexedBzip2File
 from loguru import logger
+
+# thread pool
+thread_pools = ThreadPoolExecutor(max_workers=config.settings.count_threads)
 
 
 class MagicStepIO(io.FileIO):
@@ -50,40 +54,11 @@ class MagicStepIO(io.FileIO):
         return temp_bytes
 
 
-def get_archive_reader(path, filename=None) -> IO:
-    if "-" in path:
-        logger.info(f"Take ibz2 for {path}")
-        path_obj = Path(path)
-        block_offsets_index_path = f"{path_obj.parent}/{path_obj.name}-index.dat"
-        file_custom_fileIO = MagicStepIO(path, "r")
-
-        if not os.path.exists(block_offsets_index_path):
-            # index to save blocks
-            reader = ibz2.open(file_custom_fileIO, parallelization=os.cpu_count())
-            block_offsets = reader.block_offsets()
-            with open(block_offsets_index_path, "wb") as offsets_file:
-                pickle.dump(block_offsets, offsets_file)
-            reader.close()
-        else:
-            with open(block_offsets_index_path, "rb") as offsets_file:
-                block_offsets = pickle.load(offsets_file)
-
-        reader = ibz2.open(file_custom_fileIO, parallelization=os.cpu_count())
-        reader.set_block_offsets(block_offsets)
-        return reader
-    if not filename:
-        raise ValueError("filename not set")
-    logger.info(f"Take py7z for {path}")
-    zip_file = SevenZipFile(path, "r")
-    reader = zip_file.read(targets=[filename]).get(filename)
-    return reader
-
-
 class ArchiveFileReader:
     """Async archive reader"""
 
     def __init__(self, path, filename=None):
-        self.pool = global_app.app.process_pools  # TODO as class argument
+        self.pool = thread_pools
         self.loop: AbstractEventLoop = asyncio.new_event_loop()
         self.bytes_queue: queue.Queue = queue.Queue(8192)
         self.path = path

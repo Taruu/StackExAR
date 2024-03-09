@@ -1,4 +1,4 @@
-count_workers = 32
+count_threads = 32
 archive_folder = "data/archives"
 database_folder = "data/archives"
 host = "0.0.0.0"

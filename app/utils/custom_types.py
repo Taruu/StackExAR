@@ -1,76 +1,37 @@
-import asyncio
-import hashlib
-import multiprocessing
-import queue
 import re
 import sys
-from concurrent.futures.thread import ThreadPoolExecutor
 from typing import List
 from enum import Enum
 from pathlib import Path
-
+from types import ModuleType, FunctionType
 import xml.etree.ElementTree as XmlElementTree
-import time
+from concurrent.futures.thread import ThreadPoolExecutor
 
-from sqlalchemy import select, delete, insert, func, update, and_
+from sqlalchemy import select, delete, insert, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .archive_extra import get_archive_filenames, ArchiveFileReader
-from ..database.function import get_database_session, database_session_makers
+from .archive_reader import get_archive_filenames, ArchiveFileReader
+from ..database.function import get_database_session
 from ..database.models import (
     Tag,
     QuestionPost,
     AnswerPost,
     TagToPost,
     ConfigValues,
-    Base,
 )
 
 from py7zr import SevenZipFile, is_7zfile
 
-from .. import global_app  # monkey code
-from ..utils import config
 from loguru import logger
 
 POSTS_FILENAME = "Posts.xml"
 TAGS_FILENAME = "Tags.xml"
 
-process_pools = ThreadPoolExecutor(max_workers=config.settings.count_workers)
-import sys
-from types import ModuleType, FunctionType
-from gc import get_referents
-
-# Custom objects know their class.
-# Function objects seem to know way too much, including modules.
-# Exclude modules as well.
-BLACKLIST = type, ModuleType, FunctionType
-
-
-def getsize(obj):
-    """sum size of object & members."""
-    if isinstance(obj, BLACKLIST):
-        raise TypeError("getsize() does not take argument of type: " + str(type(obj)))
-    seen_ids = set()
-    size = 0
-    objects = [obj]
-    while objects:
-        need_referents = []
-        for obj in objects:
-            if not isinstance(obj, BLACKLIST) and id(obj) not in seen_ids:
-                seen_ids.add(id(obj))
-                size += sys.getsizeof(obj)
-                need_referents.append(obj)
-        objects = get_referents(*need_referents)
-    return size
-
-
-class File(Enum):
-    POST_FILE = 1
-    TAGS_FILE = 2
-
 
 class DatabaseWorker:
+    """Class for reed file index database"""
 
+    # TODO AUTO CLOSE SESSION @ -@
     def __init__(self, database_path: str):
         self.database_path = database_path
         self.async_sessionmaker = None
@@ -162,6 +123,7 @@ class DatabaseWorker:
         await self.session.execute(insert(Tag).values(tags_list_to_add))
 
     async def get_tags_ids(self, tags_list):
+        # TODO check performance
         stmt = select(Tag).where(Tag.name.in_(tags_list))
         result = await self.session.scalars(stmt)
         return result
@@ -192,11 +154,6 @@ class DatabaseWorker:
             self.session = None
 
 
-class ArchiveWorker:
-    def __init__(self):
-        pass
-
-
 class DataArchiveReader:
     """Data archive object"""
 
@@ -210,6 +167,7 @@ class DataArchiveReader:
     tags_archive_path = None
 
     def __init__(self, archive_path: List[str] | str):
+        """Check file list in archive"""
         if not is_7zfile(archive_path):
             raise ValueError(f"Not a archvie: {archive_path}")
 
@@ -225,6 +183,7 @@ class DataArchiveReader:
             self.tags_archive_reader = ArchiveFileReader(archive_path, TAGS_FILENAME)
 
         elif (POSTS_FILENAME in all_archive_files) and ("-" in obj_path.name):
+            # TODO regex or grep
             # Big archive use '-' for separate
             archive_name = obj_path.name.split("-")[0]
             tags_archive_path = f"{obj_path.parent}/{archive_name}-Tags.7z"
@@ -249,6 +208,7 @@ class DataArchiveReader:
         )
 
     async def index_posts(self):
+        """Index post in archive file"""
         logger.info(f"start index posts: {self.name}")
         # clean table
         await self.database_worker.init_session()
@@ -292,27 +252,28 @@ class DataArchiveReader:
             except Exception:
                 continue
 
-            line_length = len(line)
-            new_tag = {
+            line_length = len(line)  # take full length of content
+
+            post_template = {
                 "id": xml_tag.attrib["Id"],
                 "start": cursor,
                 "length": line_length,
                 "score": int(xml_tag.attrib.get("Score")),
             }
-
+            # Question post
             if xml_tag.attrib.get("PostTypeId") == "1":
                 if xml_tag.attrib.get("Tags"):
                     tags = re.findall(r"<(.+?)>", xml_tag.attrib.get("Tags"))
                     tags_ids = await self.database_worker.get_tags_ids(tags)
                     temp_tags_to_post.extend(
                         [
-                            {"tag_id": tag.id, "post_id": new_tag.get("id")}
+                            {"tag_id": tag.id, "post_id": post_template.get("id")}
                             for tag in tags_ids
                         ]
                     )
 
                 temp_accepted_answer_id = xml_tag.attrib.get("AcceptedAnswerId")
-                new_tag.update(
+                post_template.update(
                     {
                         "accepted_answer_id": (
                             int(temp_accepted_answer_id)
@@ -321,11 +282,11 @@ class DataArchiveReader:
                         ),
                     }
                 )
-                temp_list_posts.append(new_tag)
-
+                temp_list_posts.append(post_template)
+            # Answer post
             elif xml_tag.attrib.get("PostTypeId") == "2":
                 temp_question_post_id = xml_tag.attrib.get("ParentId")
-                new_tag.update(
+                post_template.update(
                     {
                         "question_post_id": (
                             int(temp_question_post_id)
@@ -334,7 +295,7 @@ class DataArchiveReader:
                         ),
                     }
                 )
-                temp_list_answers.append(new_tag)
+                temp_list_answers.append(post_template)
             post_count += 1
 
             if post_count >= 4096:
@@ -350,6 +311,7 @@ class DataArchiveReader:
                     f"index {post_count} posts: {self.name} {global_count}/{last_id}"
                 )
                 post_count = 0
+            # TODO make flush+commit system
 
         await self.database_worker.insert_post_data(
             temp_list_posts, temp_list_answers, temp_tags_to_post
