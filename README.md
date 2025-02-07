@@ -42,3 +42,4 @@ port = "8000"
 - remade database worker class
 - full text search?
 - make a variation for static operation
+- use key-value database sqlite not enough for [stackoverflow.com](https://stackoverflow.com/).
